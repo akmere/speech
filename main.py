@@ -221,7 +221,7 @@ def train_model(
     train_loader = DataLoader(
         train_ds,
         batch_sampler=train_sampler,
-        num_workers=0,
+        num_workers=min(8, os.cpu_count() or 0),
         collate_fn=collate_pad,
         pin_memory=(dev.type == "cuda"),
     )
@@ -247,7 +247,7 @@ def train_model(
             val_loader = DataLoader(
                 val_ds,
                 batch_sampler=val_sampler,
-                num_workers=0,
+                num_workers=min(8, os.cpu_count() or 0),
                 collate_fn=collate_pad,
                 pin_memory=(dev.type == "cuda"),
             )
