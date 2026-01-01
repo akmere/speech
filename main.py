@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 
 from a2wv import (
     Audio2WordVectorEncoder,
+    ConvStatsPoolEncoder,
     batch_hard_triplet_loss,
     batch_hard_triplet_loss_cosine,
     classifier,
@@ -118,7 +119,7 @@ def precompute_all_mfccs(
 @torch.no_grad()
 def _build_prototypes(
     *,
-    model: Audio2WordVectorEncoder,
+    model: torch.nn.Module,
     audio_dir: str,
     words: list[str],
     sr: int,
@@ -186,7 +187,8 @@ def test_audio_file(
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
     model = load_model(model_path, dev)
-    n_mfcc = int(model.gru.input_size)
+    # Support multiple encoder types.
+    n_mfcc = int(getattr(model, "input_dim", int(model.gru.input_size)))
 
     prototypes = _build_prototypes(
         model=model,
@@ -253,6 +255,7 @@ def train_model(
     lr: float = 1e-3,
     margin: float = 1.0,
     loss_type: str = "euclidean2",
+    model_type: str = "gru",
     device: str | None = None,
     model_path: str = "a2wv.pt",
     seed: int = 0,
@@ -359,7 +362,12 @@ def train_model(
     # 9981
     print("Len test_ds:", len(test_relpaths) if test_relpaths else 0)
     # 11005
-    model = Audio2WordVectorEncoder(input_dim=n_mfcc, embedding_dim=embedding_dim)
+    if model_type == "gru":
+        model = Audio2WordVectorEncoder(input_dim=n_mfcc, embedding_dim=embedding_dim)
+    elif model_type == "conv":
+        model = ConvStatsPoolEncoder(input_dim=n_mfcc, embedding_dim=embedding_dim)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
     model.to(dev)
     model.train()
 
@@ -598,6 +606,13 @@ def main():
     parser.add_argument("--audio-dir", default=AUDIO_DIR)
     parser.add_argument("--model-path", default="a2wv.pt")
     parser.add_argument(
+        "--model",
+        type=str,
+        default="gru",
+        choices=["gru", "conv"],
+        help="Encoder architecture: 'gru' (Audio2WordVectorEncoder) or 'conv' (ConvStatsPoolEncoder)",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -713,6 +728,7 @@ def main():
             lr=args.lr,
             margin=args.margin,
             loss_type=str(args.loss),
+            model_type=str(args.model),
             seed=args.seed,
             unique_speakers=args.unique_speakers,
             max_items_per_word=args.max_items_per_word,

@@ -131,6 +131,7 @@ class Audio2WordVectorEncoder(nn.Module):
         l2_normalize: bool = True,
     ):
         super().__init__()
+        self.input_dim = int(input_dim)
         self.embedding_dim = embedding_dim
         self.l2_normalize = l2_normalize
 
@@ -164,6 +165,82 @@ class Audio2WordVectorEncoder(nn.Module):
             _, h_n = self.gru(x)
 
         emb = h_n[-1]
+        if self.l2_normalize:
+            emb = F.normalize(emb, p=2, dim=1)
+        return emb
+
+
+# ...existing code...
+class ConvStatsPoolEncoder(nn.Module):
+    """CNN (time) + masked statistics pooling -> utterance embedding.
+
+    Input x: (B, T, F) where F=n_mfcc (or log-mel bins)
+    lengths: (B,) number of valid frames (<= T)
+    Output: (B, D) embedding
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        embedding_dim: int = 64,
+        channels: int = 128,
+        l2_normalize: bool = True,
+    ):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.embedding_dim = int(embedding_dim)
+        self.l2_normalize = l2_normalize
+
+        self.net = nn.Sequential(
+            nn.Conv1d(input_dim, channels, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+        )
+
+        # stats pooling produces (mean||std) => 2*channels
+        self.proj = nn.Sequential(
+            nn.Linear(2 * channels, 2 * channels),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * channels, embedding_dim),
+        )
+
+    def forward(
+        self, x: torch.Tensor, lengths: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        # x: (B,T,F) -> (B,F,T)
+        x = x.transpose(1, 2)
+
+        h = self.net(x)  # (B,C,T)
+        B, C, T = h.shape
+
+        if lengths is None:
+            mean = h.mean(dim=2)
+            std = h.std(dim=2, unbiased=False)
+        else:
+            if lengths.dtype != torch.int64:
+                lengths = lengths.to(torch.int64)
+            lengths = lengths.clamp(min=1, max=T)
+
+            # mask: (B,T) True for valid frames
+            t = torch.arange(T, device=h.device).unsqueeze(0)  # (1,T)
+            mask = t < lengths.unsqueeze(1)  # (B,T)
+            mask_f = mask.unsqueeze(1).to(h.dtype)  # (B,1,T)
+
+            denom = mask_f.sum(dim=2).clamp_min(1.0)  # (B,1)
+            mean = (h * mask_f).sum(dim=2) / denom  # (B,C)
+
+            var = ((h - mean.unsqueeze(2)) ** 2 * mask_f).sum(dim=2) / denom
+            std = torch.sqrt(var.clamp_min(1e-8))  # (B,C)
+
+        pooled = torch.cat([mean, std], dim=1)  # (B,2C)
+        emb = self.proj(pooled)  # (B,D)
+
         if self.l2_normalize:
             emb = F.normalize(emb, p=2, dim=1)
         return emb
@@ -209,21 +286,62 @@ def classifier(
 
 def load_model(model_path: str, device: torch.device) -> Audio2WordVectorEncoder:
     checkpoint = torch.load(model_path, map_location=device)
-    input_dim = checkpoint["input_dim"]
-    embedding_dim = checkpoint["embedding_dim"]
+    input_dim = int(checkpoint["input_dim"])
+    embedding_dim = int(checkpoint["embedding_dim"])
     l2_normalize = bool(checkpoint.get("l2_normalize", True))
-    model = Audio2WordVectorEncoder(input_dim, embedding_dim, l2_normalize=l2_normalize)
+
+    model_type = str(checkpoint.get("model_type", "gru")).lower()
+    if model_type in {"gru", "a2wv", "a2wv_gru", "audio2wordvectorencoder"}:
+        dropout = float(checkpoint.get("dropout", 0.3))
+        model: nn.Module = Audio2WordVectorEncoder(
+            input_dim,
+            embedding_dim,
+            dropout=dropout,
+            l2_normalize=l2_normalize,
+        )
+    elif model_type in {
+        "conv",
+        "conv_stats_pool",
+        "convstatspool",
+        "convstatspoolencoder",
+    }:
+        channels = int(checkpoint.get("channels", 128))
+        model = ConvStatsPoolEncoder(
+            input_dim,
+            embedding_dim=embedding_dim,
+            channels=channels,
+            l2_normalize=l2_normalize,
+        )
+    else:
+        raise ValueError(f"Unknown model_type in checkpoint: {model_type}")
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
-    return model
+    return model  # type: ignore[return-value]
 
 
-def save_model(model: Audio2WordVectorEncoder, model_path: str):
-    checkpoint = {
-        "input_dim": model.gru.input_size,
-        "embedding_dim": model.embedding_dim,
-        "l2_normalize": bool(model.l2_normalize),
-        "model_state_dict": model.state_dict(),
-    }
+def save_model(model: nn.Module, model_path: str):
+    if isinstance(model, Audio2WordVectorEncoder):
+        checkpoint = {
+            "model_type": "gru",
+            "input_dim": int(getattr(model, "input_dim", model.gru.input_size)),
+            "embedding_dim": int(model.embedding_dim),
+            "dropout": float(getattr(model.gru, "dropout", 0.3)),
+            "l2_normalize": bool(model.l2_normalize),
+            "model_state_dict": model.state_dict(),
+        }
+    elif isinstance(model, ConvStatsPoolEncoder):
+        channels = int(model.net[0].out_channels)  # first conv layer
+        checkpoint = {
+            "model_type": "conv_stats_pool",
+            "input_dim": int(model.input_dim),
+            "embedding_dim": int(model.embedding_dim),
+            "channels": channels,
+            "l2_normalize": bool(model.l2_normalize),
+            "model_state_dict": model.state_dict(),
+        }
+    else:
+        raise TypeError(f"Unsupported model type for save_model: {type(model)}")
+
     torch.save(checkpoint, model_path)
