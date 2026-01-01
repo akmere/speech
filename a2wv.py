@@ -147,6 +147,15 @@ class Audio2WordVectorEncoder(nn.Module):
         self, x: torch.Tensor, lengths: torch.Tensor | None = None
     ) -> torch.Tensor:
         if lengths is not None:
+            if lengths.dtype != torch.int64:
+                lengths = lengths.to(torch.int64)
+            # sanity: lengths must be within [1, T]
+            T = x.shape[1]
+            if int(lengths.min().item()) < 1 or int(lengths.max().item()) > T:
+                raise ValueError(
+                    f"Bad lengths: min={int(lengths.min())} max={int(lengths.max())} T={T}"
+                )
+
             packed = nn.utils.rnn.pack_padded_sequence(
                 x, lengths.cpu(), batch_first=True, enforce_sorted=False
             )
