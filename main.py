@@ -29,7 +29,7 @@ from data_prep import (
     PKBatchSampler,
     SpeechCommandsDataset,
     collate_pad,
-    extract_mfcc,
+    load_or_extract_mfcc,
     read_split_list,
 )
 
@@ -48,6 +48,7 @@ def _build_prototypes(
     n_mfcc: int,
     per_class: int,
     device: torch.device,
+    mfcc_cache_dir: str | None,
 ) -> torch.Tensor:
     # Prototypes are mean embeddings per class: (C, D)
     prototypes: list[torch.Tensor] = []
@@ -67,7 +68,14 @@ def _build_prototypes(
         wavs = wavs[: max(1, per_class)]
         embs: list[torch.Tensor] = []
         for wav_path in wavs:
-            x = extract_mfcc(wav_path, sr=sr, n_mfcc=n_mfcc).to(device)
+            x = load_or_extract_mfcc(
+                wav_path=wav_path,
+                audio_dir=audio_dir,
+                sr=sr,
+                n_mfcc=n_mfcc,
+                cache_dir=mfcc_cache_dir,
+                write_cache=False,
+            ).to(device)
             xb = x.unsqueeze(0)  # (1, T, F)
             lengths = torch.tensor([x.shape[0]], dtype=torch.long, device=device)
             z = model(xb, lengths=lengths)[0]  # (D,)
@@ -91,6 +99,7 @@ def test_audio_file(
     threshold: float = 1.0,
     prototypes_per_class: int = 5,
     device: str | None = None,
+    mfcc_cache_dir: str | None = None,
 ) -> int:
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -110,9 +119,17 @@ def test_audio_file(
         n_mfcc=n_mfcc,
         per_class=prototypes_per_class,
         device=dev,
+        mfcc_cache_dir=mfcc_cache_dir,
     )
 
-    x = extract_mfcc(audio_path, sr=sr, n_mfcc=n_mfcc).to(dev)
+    x = load_or_extract_mfcc(
+        wav_path=audio_path,
+        audio_dir=audio_dir,
+        sr=sr,
+        n_mfcc=n_mfcc,
+        cache_dir=mfcc_cache_dir,
+        write_cache=False,
+    ).to(dev)
     xb = x.unsqueeze(0)  # (1, T, F)
 
     def f(inp: torch.Tensor) -> torch.Tensor:
@@ -165,6 +182,8 @@ def train_model(
     max_items_per_word: int | None = None,
     val_steps_per_epoch: int = 25,
     use_official_validation_split: bool = True,
+    mfcc_cache_dir: str | None = None,
+    mfcc_cache_write: bool = False,
 ) -> str:
     torch.manual_seed(seed)
     random.seed(seed)
@@ -194,6 +213,8 @@ def train_model(
         words=words,
         sr=sr,
         n_mfcc=n_mfcc,
+        mfcc_cache_dir=mfcc_cache_dir,
+        mfcc_cache_write=mfcc_cache_write,
         unique_speakers=unique_speakers,
         max_items_per_word=max_items_per_word,
         exclude_relpaths=train_exclude,
@@ -206,6 +227,8 @@ def train_model(
             words=words,
             sr=sr,
             n_mfcc=n_mfcc,
+            mfcc_cache_dir=mfcc_cache_dir,
+            mfcc_cache_write=False,
             unique_speakers=False,
             max_items_per_word=None,
             include_relpaths=val_relpaths,
@@ -353,6 +376,7 @@ def _audit_training_audio(
     batches: int,
     play: bool,
     interactive: bool,
+    mfcc_cache_dir: str | None,
 ) -> None:
     val_relpaths: set[str] = set()
     test_relpaths: set[str] = set()
@@ -374,6 +398,8 @@ def _audit_training_audio(
         words=words,
         sr=sr,
         n_mfcc=n_mfcc,
+        mfcc_cache_dir=mfcc_cache_dir,
+        mfcc_cache_write=False,
         unique_speakers=unique_speakers,
         max_items_per_word=max_items_per_word,
         exclude_relpaths=train_exclude,
@@ -493,6 +519,17 @@ def main():
         default=5,
         help="How many wavs per class to average into prototypes",
     )
+    parser.add_argument(
+        "--mfcc-cache-dir",
+        type=str,
+        default=None,
+        help="Optional directory containing precomputed MFCC .pt files (see tools/precompute_mfccs.py)",
+    )
+    parser.add_argument(
+        "--mfcc-cache-write",
+        action="store_true",
+        help="If set, writes MFCCs into --mfcc-cache-dir on cache misses during training",
+    )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--steps-per-epoch", type=int, default=5657)
     parser.add_argument("--P", type=int, default=5)
@@ -527,6 +564,7 @@ def main():
             batches=max(1, int(args.audit_batches)),
             play=bool(args.audit_play),
             interactive=not bool(args.audit_non_interactive),
+            mfcc_cache_dir=args.mfcc_cache_dir,
         )
         return
 
@@ -545,6 +583,8 @@ def main():
             unique_speakers=args.unique_speakers,
             max_items_per_word=args.max_items_per_word,
             use_official_validation_split=args.use_official_validation_split,
+            mfcc_cache_dir=args.mfcc_cache_dir,
+            mfcc_cache_write=bool(args.mfcc_cache_write),
         )
         return
 
@@ -558,6 +598,7 @@ def main():
             threshold=args.threshold,
             prototypes_per_class=args.prototypes_per_class,
             device=args.device,
+            mfcc_cache_dir=args.mfcc_cache_dir,
         )
         return
 

@@ -73,6 +73,65 @@ def extract_mfcc(wav_path: str, sr: int = 16000, n_mfcc: int = 40) -> torch.Tens
     return torch.tensor(mfcc.T, dtype=torch.float32)
 
 
+def mfcc_cache_path(
+    *,
+    cache_dir: str,
+    audio_dir: str,
+    wav_path: str,
+    sr: int,
+    n_mfcc: int,
+) -> str:
+    """Map a wav path to a deterministic cache file path.
+
+    Cache is stored under: {cache_dir}/sr{sr}_mfcc{n_mfcc}/<relpath-without-ext>.pt
+    """
+    rel = _normalize_relpath(os.path.relpath(wav_path, audio_dir))
+    rel_no_ext, _ext = os.path.splitext(rel)
+    return os.path.join(cache_dir, f"sr{sr}_mfcc{n_mfcc}", rel_no_ext + ".pt")
+
+
+def load_or_extract_mfcc(
+    *,
+    wav_path: str,
+    audio_dir: str,
+    sr: int,
+    n_mfcc: int,
+    cache_dir: str | None = None,
+    write_cache: bool = False,
+) -> torch.Tensor:
+    """Load MFCC from cache or compute it.
+
+    Returns a float tensor of shape (time, n_mfcc) on CPU.
+    """
+    if cache_dir is not None:
+        cache_path = mfcc_cache_path(
+            cache_dir=cache_dir,
+            audio_dir=audio_dir,
+            wav_path=wav_path,
+            sr=sr,
+            n_mfcc=n_mfcc,
+        )
+        if os.path.isfile(cache_path):
+            x = torch.load(cache_path, map_location="cpu")
+            if not isinstance(x, torch.Tensor):
+                raise TypeError(f"Cached MFCC is not a torch.Tensor: {cache_path}")
+            return x.to(dtype=torch.float32)
+
+    x = extract_mfcc(wav_path, sr=sr, n_mfcc=n_mfcc)
+
+    if cache_dir is not None and write_cache:
+        cache_path = mfcc_cache_path(
+            cache_dir=cache_dir,
+            audio_dir=audio_dir,
+            wav_path=wav_path,
+            sr=sr,
+            n_mfcc=n_mfcc,
+        )
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        torch.save(x.cpu(), cache_path)
+    return x
+
+
 def list_words(audio_dir: str = DEFAULT_AUDIO_DIR) -> list[str]:
     """List label folders under the Speech Commands dataset root."""
     if not os.path.isdir(audio_dir):
@@ -120,6 +179,8 @@ class SpeechCommandsDataset(Dataset[tuple[torch.Tensor, int]]):
         words: list[str] | None = None,
         sr: int = 16000,
         n_mfcc: int = 40,
+        mfcc_cache_dir: str | None = None,
+        mfcc_cache_write: bool = False,
         unique_speakers: bool = False,
         max_items_per_word: int | None = None,
         include_relpaths: set[str] | None = None,
@@ -128,6 +189,8 @@ class SpeechCommandsDataset(Dataset[tuple[torch.Tensor, int]]):
         self.audio_dir = audio_dir
         self.sr = sr
         self.n_mfcc = n_mfcc
+        self.mfcc_cache_dir = mfcc_cache_dir
+        self.mfcc_cache_write = mfcc_cache_write
 
         if words is None:
             words = list_words(audio_dir)
@@ -203,7 +266,14 @@ class SpeechCommandsDataset(Dataset[tuple[torch.Tensor, int]]):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         wav_path, label = self.items[index]
-        x = extract_mfcc(wav_path, sr=self.sr, n_mfcc=self.n_mfcc)
+        x = load_or_extract_mfcc(
+            wav_path=wav_path,
+            audio_dir=self.audio_dir,
+            sr=self.sr,
+            n_mfcc=self.n_mfcc,
+            cache_dir=self.mfcc_cache_dir,
+            write_cache=self.mfcc_cache_write,
+        )
         return x, label
 
 
