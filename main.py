@@ -38,6 +38,136 @@ AUDIO_DIR: Final[str] = DEFAULT_AUDIO_DIR
 DEFAULT_WORDS: Final[list[str]] = LABELS_V2_NO_SILENCE
 
 
+def embedding_cache_path(
+    *,
+    cache_dir: str,
+    audio_dir: str,
+    wav_path: str,
+) -> str:
+    rel = os.path.relpath(wav_path, audio_dir).replace("\\", "/")
+    rel_no_ext, _ext = os.path.splitext(rel)
+    return os.path.join(cache_dir, rel_no_ext + ".pt")
+
+
+@torch.no_grad()
+def precompute_all_embeddings(
+    *,
+    model_path: str,
+    audio_dir: str,
+    words: list[str],
+    sr: int,
+    device: str | None,
+    mfcc_cache_dir: str | None,
+    embedding_cache_dir: str | None,
+    overwrite: bool = False,
+    batch_size: int = 128,
+    use_official_validation_split: bool = True,
+) -> tuple[int, int]:
+    """Compute embeddings for all dataset items and optionally cache them.
+
+    Returns (wrote, skipped).
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = torch.device(device)
+
+    if not os.path.isfile(model_path):
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    model = load_model(model_path, dev)
+    n_mfcc = int(model.gru.input_size)
+
+    # Mirror training split behavior by default: exclude official val/test.
+    val_relpaths: set[str] = set()
+    test_relpaths: set[str] = set()
+    if use_official_validation_split:
+        val_relpaths = read_split_list(os.path.join(audio_dir, "validation_list.txt"))
+        test_relpaths = read_split_list(os.path.join(audio_dir, "testing_list.txt"))
+
+    exclude_relpaths = (
+        (val_relpaths | test_relpaths) if (val_relpaths or test_relpaths) else None
+    )
+
+    ds = SpeechCommandsDataset(
+        audio_dir=audio_dir,
+        words=words,
+        sr=sr,
+        n_mfcc=n_mfcc,
+        mfcc_cache_dir=mfcc_cache_dir,
+        mfcc_cache_write=False,
+        unique_speakers=False,
+        max_items_per_word=None,
+        exclude_relpaths=exclude_relpaths,
+    )
+
+    if embedding_cache_dir is None:
+        print(
+            "No --embedding-cache-dir provided; computing embeddings without writing."
+        )
+    else:
+        os.makedirs(embedding_cache_dir, exist_ok=True)
+
+    wrote = 0
+    skipped = 0
+
+    total = len(ds)
+    if total == 0:
+        return (0, 0)
+
+    bs = max(1, int(batch_size))
+    for start in range(0, total, bs):
+        end = min(total, start + bs)
+        indices = list(range(start, end))
+
+        # Filter indices we actually need to compute (if caching and not overwriting).
+        if embedding_cache_dir is not None and not overwrite:
+            needed: list[int] = []
+            for idx in indices:
+                wav_path = ds.wav_path(idx)
+                out_path = embedding_cache_path(
+                    cache_dir=embedding_cache_dir,
+                    audio_dir=audio_dir,
+                    wav_path=wav_path,
+                )
+                if os.path.isfile(out_path):
+                    skipped += 1
+                else:
+                    needed.append(idx)
+            indices = needed
+
+        if not indices:
+            continue
+
+        batch_items = [ds[i] for i in indices]
+        batch = collate_pad(batch_items)
+        x = batch.x.to(dev, non_blocking=True)
+        lengths = batch.lengths.to(dev)
+        emb = model(x, lengths=lengths).detach().cpu()
+
+        if embedding_cache_dir is not None:
+            for j, idx in enumerate(indices):
+                wav_path = ds.wav_path(idx)
+                out_path = embedding_cache_path(
+                    cache_dir=embedding_cache_dir,
+                    audio_dir=audio_dir,
+                    wav_path=wav_path,
+                )
+                if (not overwrite) and os.path.isfile(out_path):
+                    skipped += 1
+                    continue
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                torch.save(emb[j].to(dtype=torch.float32), out_path)
+                wrote += 1
+
+        if (start // bs) % 20 == 0:
+            done = min(end, total)
+            print(
+                f"embeddings progress: {done}/{total} (wrote={wrote}, skipped={skipped})"
+            )
+
+    return (wrote, skipped)
+
+
 @torch.no_grad()
 def _build_prototypes(
     *,
@@ -467,6 +597,11 @@ def main():
     parser = argparse.ArgumentParser(description="Speech Commands a2wv (training)")
     parser.add_argument("--train", action="store_true", help="Train the encoder")
     parser.add_argument(
+        "--precompute-embeddings",
+        action="store_true",
+        help="Compute embeddings for all dataset wavs and write to an embedding cache",
+    )
+    parser.add_argument(
         "--audit",
         action="store_true",
         help="Preview which wavs/labels are used for training (optionally play audio)",
@@ -531,6 +666,23 @@ def main():
         action="store_true",
         help="If set, writes MFCCs into --mfcc-cache-dir on cache misses during training",
     )
+    parser.add_argument(
+        "--embedding-cache-dir",
+        type=str,
+        default=None,
+        help="Directory to store cached embeddings (.pt) for a trained model",
+    )
+    parser.add_argument(
+        "--embedding-cache-overwrite",
+        action="store_true",
+        help="Overwrite existing cached embeddings",
+    )
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=128,
+        help="Batch size for embedding precompute",
+    )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--steps-per-epoch", type=int, default=5657)
     parser.add_argument("--P", type=int, default=5)
@@ -587,6 +739,22 @@ def main():
             mfcc_cache_dir=args.mfcc_cache_dir,
             mfcc_cache_write=bool(args.mfcc_cache_write),
         )
+        return
+
+    if args.precompute_embeddings:
+        wrote, skipped = precompute_all_embeddings(
+            model_path=args.model_path,
+            audio_dir=args.audio_dir,
+            words=DEFAULT_WORDS,
+            sr=args.sr,
+            device=args.device,
+            mfcc_cache_dir=args.mfcc_cache_dir,
+            embedding_cache_dir=args.embedding_cache_dir,
+            overwrite=bool(args.embedding_cache_overwrite),
+            batch_size=int(args.embedding_batch_size),
+            use_official_validation_split=args.use_official_validation_split,
+        )
+        print(f"embedding cache done: wrote={wrote} skipped={skipped}")
         return
 
     if args.test_audio is not None:
