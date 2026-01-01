@@ -170,6 +170,7 @@ def train_model(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
+    print("device: ", device)
 
     val_relpaths: set[str] = set()
     test_relpaths: set[str] = set()
