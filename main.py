@@ -377,6 +377,13 @@ def train_model(
 
             opt.zero_grad(set_to_none=True)
             emb = model(x, lengths=lengths)
+            # collapse checks (variation across samples, not across dimensions)
+            batch_std = float(
+                emb.detach().float().std(dim=0).mean().item()
+            )  # ~0 if all samples same
+            mean_pair_dist = float(
+                torch.cdist(emb.detach(), emb.detach()).mean().item()
+            )
             loss = batch_hard_triplet_loss(emb, labels, margin=margin)
             loss.backward()
             opt.step()
@@ -389,7 +396,8 @@ def train_model(
                 print(
                     f"epoch {epoch}/{epochs} step {step}/{steps_per_epoch} "
                     f"loss_cur={loss.item():.6f} loss_avg={avg:.6f} "
-                    f"emb_std={emb_std:.6f} emb_norm_mean={emb_norm_mean:.6f}"
+                    f"emb_std={emb_std:.6f} emb_norm_mean={emb_norm_mean:.6f} "
+                    f"batch_std={batch_std:.6e} mean_pair_dist={mean_pair_dist:.6e}"
                 )
 
         train_loss = running / max(1, steps_per_epoch)
