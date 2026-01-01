@@ -39,7 +39,10 @@ def batch_hard_triplet_loss(
             )
             _WARNED_UNNORMALIZED_EMBEDDINGS = True
 
-    dist = torch.cdist(embeddings, embeddings, p=2)
+    x = embeddings
+    x2 = (x * x).sum(dim=1, keepdim=True)  # (B,1)
+    dist2 = (x2 + x2.T - 2.0 * (x @ x.T)).clamp_min(0.0)  # (B,B)
+    dist = dist2  # use squared distances
     B = dist.shape[0]
 
     labels_eq = labels.unsqueeze(0) == labels.unsqueeze(1)
