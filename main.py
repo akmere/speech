@@ -188,7 +188,11 @@ def test_audio_file(
 
     model = load_model(model_path, dev)
     # Support multiple encoder types.
-    n_mfcc = int(getattr(model, "input_dim", int(model.gru.input_size)))
+    if hasattr(model, "input_dim"):
+        n_mfcc = int(getattr(model, "input_dim"))
+    else:
+        # Fallback for GRU-based encoder.
+        n_mfcc = int(getattr(model, "gru").input_size)
 
     prototypes = _build_prototypes(
         model=model,
