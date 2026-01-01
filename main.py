@@ -9,6 +9,8 @@
 import argparse
 import os
 import random
+import shutil
+import subprocess
 from typing import Final
 
 import torch
@@ -177,12 +179,15 @@ def train_model(
     if use_official_validation_split:
         val_relpaths = read_split_list(os.path.join(audio_dir, "validation_list.txt"))
         test_relpaths = read_split_list(os.path.join(audio_dir, "testing_list.txt"))
-        if not val_relpaths:
+        if not val_relpaths and not test_relpaths:
             print(
-                "validation_list.txt not found or empty; falling back to train-only loss"
+                "validation_list.txt/testing_list.txt not found or empty; falling back to train-only loss"
             )
 
-    train_exclude = (val_relpaths | test_relpaths) if val_relpaths else None
+    # Exclude whatever official splits we actually have (val and/or test).
+    train_exclude = (
+        (val_relpaths | test_relpaths) if (val_relpaths or test_relpaths) else None
+    )
 
     train_ds = SpeechCommandsDataset(
         audio_dir=audio_dir,
@@ -224,20 +229,28 @@ def train_model(
     val_loader: DataLoader | None = None
     val_sampler: PKBatchSampler | None = None
     if val_ds is not None:
-        val_sampler = PKBatchSampler(
-            val_ds.label_to_indices,
-            P=P,
-            K=K,
-            steps_per_epoch=val_steps_per_epoch,
-            seed=seed + 999,
-        )
-        val_loader = DataLoader(
-            val_ds,
-            batch_sampler=val_sampler,
-            num_workers=0,
-            collate_fn=collate_pad,
-            pin_memory=(dev.type == "cuda"),
-        )
+        # Guard: official val split might not contain enough classes for requested P.
+        if len(val_ds.label_to_indices) < P:
+            print(
+                f"Warning: validation split has only {len(val_ds.label_to_indices)} classes, "
+                f"but P={P}. Disabling validation loader."
+            )
+            val_ds = None
+        else:
+            val_sampler = PKBatchSampler(
+                val_ds.label_to_indices,
+                P=P,
+                K=K,
+                steps_per_epoch=val_steps_per_epoch,
+                seed=seed + 999,
+            )
+            val_loader = DataLoader(
+                val_ds,
+                batch_sampler=val_sampler,
+                num_workers=0,
+                collate_fn=collate_pad,
+                pin_memory=(dev.type == "cuda"),
+            )
 
     print("Len train_ds:", len(train_ds))
     # 84843
@@ -282,15 +295,16 @@ def train_model(
         if val_loader is not None:
             model.eval()
             val_running = 0.0
+            vsteps = 0
             with torch.no_grad():
-                for vstep, vbatch in enumerate(val_loader, start=1):
+                for vsteps, vbatch in enumerate(val_loader, start=1):
                     vx = vbatch.x.to(dev, non_blocking=True)
                     vlengths = vbatch.lengths.to(dev)
                     vlabels = vbatch.labels.to(dev)
                     vemb = model(vx, lengths=vlengths)
                     vloss = batch_hard_triplet_loss(vemb, vlabels, margin=margin)
                     val_running += float(vloss.item())
-            val_loss = val_running / max(1, val_steps_per_epoch)
+            val_loss = val_running / max(1, vsteps)
             print(
                 f"epoch {epoch}/{epochs} train_loss={train_loss:.4f} val_loss={val_loss:.4f}"
             )
@@ -310,9 +324,143 @@ def train_model(
     return model_path
 
 
+def _pick_audio_player() -> list[str] | None:
+    # Prefer ffplay (from ffmpeg) since it's widely available and doesn't require a GUI.
+    if shutil.which("ffplay"):
+        return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error"]
+    # ALSA
+    if shutil.which("aplay"):
+        return ["aplay", "-q"]
+    # PulseAudio
+    if shutil.which("paplay"):
+        return ["paplay"]
+    return None
+
+
+def _audit_training_audio(
+    *,
+    audio_dir: str,
+    words: list[str],
+    sr: int,
+    n_mfcc: int,
+    P: int,
+    K: int,
+    steps_per_epoch: int,
+    seed: int,
+    unique_speakers: bool,
+    max_items_per_word: int | None,
+    use_official_validation_split: bool,
+    batches: int,
+    play: bool,
+    interactive: bool,
+) -> None:
+    val_relpaths: set[str] = set()
+    test_relpaths: set[str] = set()
+    if use_official_validation_split:
+        val_relpaths = read_split_list(os.path.join(audio_dir, "validation_list.txt"))
+        test_relpaths = read_split_list(os.path.join(audio_dir, "testing_list.txt"))
+        if not val_relpaths and not test_relpaths:
+            print(
+                "validation_list.txt/testing_list.txt not found or empty; audit will use full folder dataset"
+            )
+
+    # Exclude whatever official splits we actually have (val and/or test).
+    train_exclude = (
+        (val_relpaths | test_relpaths) if (val_relpaths or test_relpaths) else None
+    )
+
+    train_ds = SpeechCommandsDataset(
+        audio_dir=audio_dir,
+        words=words,
+        sr=sr,
+        n_mfcc=n_mfcc,
+        unique_speakers=unique_speakers,
+        max_items_per_word=max_items_per_word,
+        exclude_relpaths=train_exclude,
+    )
+
+    sampler = PKBatchSampler(
+        train_ds.label_to_indices,
+        P=P,
+        K=K,
+        steps_per_epoch=max(1, steps_per_epoch),
+        seed=seed,
+    )
+
+    player = _pick_audio_player() if play else None
+    if play and player is None:
+        print("No audio player found (tried: ffplay, aplay, paplay).")
+        print("Install ffmpeg or alsa-utils, or run without --audit-play.")
+
+    print("Audit dataset:")
+    print(f"  audio_dir: {audio_dir}")
+    print(f"  items: {len(train_ds)}")
+    print(f"  words: {len(train_ds.words)}")
+    print(f"  sampling: P={P}, K={K} (batch size={P * K})")
+    print(f"  exclude official val/test: {bool(train_exclude)}")
+
+    shown = 0
+    mismatches = 0
+    for b, batch_indices in enumerate(iter(sampler), start=1):
+        if b > batches:
+            break
+
+        print(f"\n=== audit batch {b}/{batches} ===")
+        for j, idx in enumerate(batch_indices, start=1):
+            wav_path = train_ds.wav_path(idx)
+            _x, label = train_ds[idx]
+            word = train_ds.word_for_label(label)
+
+            rel = os.path.relpath(wav_path, audio_dir).replace("\\", "/")
+            folder = rel.split("/", 1)[0] if "/" in rel else ""
+            ok = folder == word
+            if not ok:
+                mismatches += 1
+
+            status = "OK" if ok else "MISMATCH"
+            print(
+                f"{j:02d}. label={int(label):02d} word='{word}' folder='{folder}' [{status}]"
+            )
+            print(f"    {rel}")
+
+            if player is not None:
+                if interactive:
+                    ans = input("    Press Enter to play (q to quit): ").strip().lower()
+                    if ans in {"q", "quit"}:
+                        print("Stopping audit.")
+                        print(f"Summary: shown={shown} mismatches={mismatches}")
+                        return
+                subprocess.run(player + [wav_path], check=False)
+
+            shown += 1
+
+    print(f"\nSummary: shown={shown} mismatches={mismatches}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Speech Commands a2wv (training)")
     parser.add_argument("--train", action="store_true", help="Train the encoder")
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Preview which wavs/labels are used for training (optionally play audio)",
+    )
+    parser.add_argument(
+        "--audit-batches",
+        type=int,
+        default=1,
+        help="How many sampled PK batches to preview during --audit",
+    )
+    parser.add_argument(
+        "--audit-play",
+        action="store_true",
+        help="Play each wav during --audit (requires ffplay/aplay/paplay)",
+    )
+    parser.add_argument(
+        "--audit-non-interactive",
+        action="store_true",
+        help="Don't prompt between clips when using --audit-play",
+    )
     parser.add_argument(
         "--test-audio",
         type=str,
@@ -355,7 +503,32 @@ def main():
     parser.add_argument("--unique-speakers", action="store_true")
     parser.add_argument("--max-items-per-word", type=int, default=None)
     parser.add_argument("--val-steps-per-epoch", type=int, default=666)
+    parser.add_argument(
+        "--use-official-validation-split",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Exclude official val/test lists from training/audit",
+    )
     args = parser.parse_args()
+
+    if args.audit:
+        _audit_training_audio(
+            audio_dir=args.audio_dir,
+            words=DEFAULT_WORDS,
+            sr=args.sr,
+            n_mfcc=40,
+            P=args.P,
+            K=args.K,
+            steps_per_epoch=args.steps_per_epoch,
+            seed=args.seed,
+            unique_speakers=args.unique_speakers,
+            max_items_per_word=args.max_items_per_word,
+            use_official_validation_split=args.use_official_validation_split,
+            batches=max(1, int(args.audit_batches)),
+            play=bool(args.audit_play),
+            interactive=not bool(args.audit_non_interactive),
+        )
+        return
 
     if args.train:
         train_model(
@@ -371,6 +544,7 @@ def main():
             seed=args.seed,
             unique_speakers=args.unique_speakers,
             max_items_per_word=args.max_items_per_word,
+            use_official_validation_split=args.use_official_validation_split,
         )
         return
 

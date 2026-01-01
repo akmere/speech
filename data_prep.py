@@ -194,6 +194,13 @@ class SpeechCommandsDataset(Dataset[tuple[torch.Tensor, int]]):
     def __len__(self) -> int:
         return len(self.items)
 
+    def wav_path(self, index: int) -> str:
+        wav_path, _label = self.items[index]
+        return wav_path
+
+    def word_for_label(self, label: int) -> str:
+        return self.words[int(label)]
+
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         wav_path, label = self.items[index]
         x = extract_mfcc(wav_path, sr=self.sr, n_mfcc=self.n_mfcc)
