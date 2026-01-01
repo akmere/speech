@@ -522,11 +522,12 @@ def main():
     parser.add_argument(
         "--mfcc-cache-dir",
         type=str,
-        default=None,
+        default="mfcc_cache",
         help="Optional directory containing precomputed MFCC .pt files (see tools/precompute_mfccs.py)",
     )
     parser.add_argument(
         "--mfcc-cache-write",
+        default=True,
         action="store_true",
         help="If set, writes MFCCs into --mfcc-cache-dir on cache misses during training",
     )
