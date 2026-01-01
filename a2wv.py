@@ -62,6 +62,64 @@ def batch_hard_triplet_loss(
     return loss.mean() if loss.numel() else torch.tensor(0.0, device=embeddings.device)
 
 
+def batch_hard_triplet_loss_cosine(
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    margin: float = 0.2,
+) -> torch.Tensor:
+    """Batch-hard triplet loss using cosine similarity.
+
+    Assumes embeddings are L2-normalized.
+
+    We define similarity s(i,j) = <e_i, e_j>.
+    Hardest positive: least similar positive.
+    Hardest negative: most similar negative.
+
+    Loss per anchor: relu(hardest_neg - hardest_pos + margin)
+    """
+    if embeddings.ndim != 2:
+        raise ValueError("embeddings must be (B, D)")
+    if labels.ndim != 1 or labels.shape[0] != embeddings.shape[0]:
+        raise ValueError("labels must be (B,)")
+
+    global _WARNED_UNNORMALIZED_EMBEDDINGS
+    if not _WARNED_UNNORMALIZED_EMBEDDINGS and embeddings.numel() != 0:
+        norms = embeddings.detach().norm(p=2, dim=1)
+        if not torch.isfinite(norms).all():
+            raise ValueError("embeddings contain NaN/Inf norms")
+        max_dev = (norms - 1.0).abs().max().item()
+        if max_dev > 1e-2:
+            warnings.warn(
+                "batch_hard_triplet_loss_cosine expects L2-normalized embeddings; "
+                f"max |norm-1|={max_dev:.3g}. "
+                "Enable l2_normalize in Audio2WordVectorEncoder or normalize before calling loss.",
+                RuntimeWarning,
+            )
+            _WARNED_UNNORMALIZED_EMBEDDINGS = True
+
+    # Cosine similarity matrix: (B,B)
+    sim = embeddings @ embeddings.T
+    B = sim.shape[0]
+
+    labels_eq = labels.unsqueeze(0) == labels.unsqueeze(1)
+    eye = torch.eye(B, device=labels.device, dtype=torch.bool)
+
+    pos_mask = labels_eq & ~eye
+    neg_mask = ~labels_eq
+
+    # Hardest positive: minimum similarity among positives.
+    pos_sim = sim.masked_fill(~pos_mask, float("inf"))
+    hardest_pos = pos_sim.min(dim=1).values
+
+    # Hardest negative: maximum similarity among negatives.
+    neg_sim = sim.masked_fill(~neg_mask, float("-inf"))
+    hardest_neg = neg_sim.max(dim=1).values
+
+    loss = F.relu(hardest_neg - hardest_pos + margin)
+    loss = loss[torch.isfinite(loss)]
+    return loss.mean() if loss.numel() else torch.tensor(0.0, device=embeddings.device)
+
+
 class Audio2WordVectorEncoder(nn.Module):
     """2-layer unidirectional GRU encoder producing one embedding per utterance."""
 

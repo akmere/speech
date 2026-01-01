@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 from a2wv import (
     Audio2WordVectorEncoder,
     batch_hard_triplet_loss,
+    batch_hard_triplet_loss_cosine,
     classifier,
     load_model,
     save_model,
@@ -251,6 +252,7 @@ def train_model(
     epochs: int = 5,
     lr: float = 1e-3,
     margin: float = 1.0,
+    loss_type: str = "euclidean2",
     device: str | None = None,
     model_path: str = "a2wv.pt",
     seed: int = 0,
@@ -363,6 +365,13 @@ def train_model(
 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
+    if loss_type == "euclidean2":
+        loss_fn = batch_hard_triplet_loss
+    elif loss_type == "cosine":
+        loss_fn = batch_hard_triplet_loss_cosine
+    else:
+        raise ValueError(f"Unknown loss_type: {loss_type}")
+
     best_val = float("inf")
     for epoch in range(1, epochs + 1):
         model.train()
@@ -384,7 +393,7 @@ def train_model(
             mean_pair_dist = float(
                 torch.cdist(emb.detach(), emb.detach()).mean().item()
             )
-            loss = batch_hard_triplet_loss(emb, labels, margin=margin)
+            loss = loss_fn(emb, labels, margin=margin)
             loss.backward()
             opt.step()
 
@@ -413,7 +422,7 @@ def train_model(
                     vlengths = vbatch.lengths.to(dev)
                     vlabels = vbatch.labels.to(dev)
                     vemb = model(vx, lengths=vlengths)
-                    vloss = batch_hard_triplet_loss(vemb, vlabels, margin=margin)
+                    vloss = loss_fn(vemb, vlabels, margin=margin)
                     val_running += float(vloss.item())
             val_loss = val_running / max(1, vsteps)
             print(
@@ -641,6 +650,13 @@ def main():
     parser.add_argument("--K", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-3)
     parser.add_argument("--margin", type=float, default=1.0)
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="euclidean2",
+        choices=["euclidean2", "cosine"],
+        help="Triplet loss variant to use (cosine typically works with margin ~0.2)",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--unique-speakers", action="store_true")
     parser.add_argument("--max-items-per-word", type=int, default=None)
@@ -696,6 +712,7 @@ def main():
             K=args.K,
             lr=args.lr,
             margin=args.margin,
+            loss_type=str(args.loss),
             seed=args.seed,
             unique_speakers=args.unique_speakers,
             max_items_per_word=args.max_items_per_word,
