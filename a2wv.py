@@ -1,8 +1,12 @@
 from collections.abc import Callable
+import warnings
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+_WARNED_UNNORMALIZED_EMBEDDINGS = False
 
 
 def batch_hard_triplet_loss(
@@ -19,6 +23,21 @@ def batch_hard_triplet_loss(
         raise ValueError("embeddings must be (B, D)")
     if labels.ndim != 1 or labels.shape[0] != embeddings.shape[0]:
         raise ValueError("labels must be (B,)")
+
+    global _WARNED_UNNORMALIZED_EMBEDDINGS
+    if not _WARNED_UNNORMALIZED_EMBEDDINGS and embeddings.numel() != 0:
+        norms = embeddings.detach().norm(p=2, dim=1)
+        if not torch.isfinite(norms).all():
+            raise ValueError("embeddings contain NaN/Inf norms")
+        max_dev = (norms - 1.0).abs().max().item()
+        if max_dev > 1e-2:
+            warnings.warn(
+                "batch_hard_triplet_loss expects L2-normalized embeddings; "
+                f"max |norm-1|={max_dev:.3g}. "
+                "Enable l2_normalize in Audio2WordVectorEncoder or normalize before calling loss.",
+                RuntimeWarning,
+            )
+            _WARNED_UNNORMALIZED_EMBEDDINGS = True
 
     dist = torch.cdist(embeddings, embeddings, p=2)
     B = dist.shape[0]
@@ -122,7 +141,8 @@ def load_model(model_path: str, device: torch.device) -> Audio2WordVectorEncoder
     checkpoint = torch.load(model_path, map_location=device)
     input_dim = checkpoint["input_dim"]
     embedding_dim = checkpoint["embedding_dim"]
-    model = Audio2WordVectorEncoder(input_dim, embedding_dim)
+    l2_normalize = bool(checkpoint.get("l2_normalize", True))
+    model = Audio2WordVectorEncoder(input_dim, embedding_dim, l2_normalize=l2_normalize)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
@@ -133,6 +153,7 @@ def save_model(model: Audio2WordVectorEncoder, model_path: str):
     checkpoint = {
         "input_dim": model.gru.input_size,
         "embedding_dim": model.embedding_dim,
+        "l2_normalize": bool(model.l2_normalize),
         "model_state_dict": model.state_dict(),
     }
     torch.save(checkpoint, model_path)
