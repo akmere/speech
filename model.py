@@ -163,6 +163,22 @@ class Model(L.LightningModule):
         self.log("test_loss", loss)
         return loss
 
+    def on_train_epoch_end(self):
+        epoch = self.current_epoch
+        train_loss = self.trainer.callback_metrics.get("train_loss")
+        if train_loss is not None:
+            self.print(
+                f"epoch={epoch} train_loss={train_loss.detach().cpu().item():.6f}"
+            )
+
+    def on_validation_epoch_end(self):
+        epoch = self.current_epoch
+        validation_loss = self.trainer.callback_metrics.get("val_loss")
+        if validation_loss is not None:
+            self.print(
+                f"epoch={epoch} validation_loss={validation_loss.detach().cpu().item():.6f}"
+            )
+
     def configure_optimizers(
         self,
     ):

@@ -38,6 +38,12 @@ if __name__ == "__main__":
         default=1,
         help="number of devices (set 1 to avoid multi-process)",
     )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.003,
+        help="learning rate",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -46,7 +52,7 @@ if __name__ == "__main__":
         print(f"Using accelerator: {accelerator}")
         N_MFCC = 40
         SR = 16000
-        model = Model(N_MFCC, 0.003, 64, 0.3, True)
+        model = Model(N_MFCC, args.lr, 64, 0.3, True)
         dm = DataModule(
             dataset_info=speech_commands_dataset_info,
             num_workers=args.num_workers,
