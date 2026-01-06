@@ -50,6 +50,30 @@ if __name__ == "__main__":
         default="gru",
         help="model type",
     )
+    parser.add_argument(
+        "--margin",
+        type=float,
+        default=1.0,
+        help="margin in triplet loss",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.3,
+        help="drouput in GRU",
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=5,
+        help="k in batch triplet loss",
+    )
+    parser.add_argument(
+        "--p",
+        type=float,
+        default=3,
+        help="p in batch triplet loss",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -60,10 +84,22 @@ if __name__ == "__main__":
         SR = 16000
         if args.model == "conv":
             model = ConvStatsPoolEncoder(
-                N_MFCC, embedding_dim=64, lr=args.lr, channels=128, l2_normalize=True
+                N_MFCC,
+                embedding_dim=64,
+                lr=args.lr,
+                channels=128,
+                l2_normalize=True,
+                margin=args.margin,
             )
         else:
-            model = Model(N_MFCC, args.lr, 64, 0.3, True)
+            model = Model(
+                N_MFCC,
+                args.lr,
+                embedding_dim=64,
+                dropout=args.dropout,
+                margin=args.margin,
+                l2_normalize=True,
+            )
         print("Model")
         print(model)
         dm = DataModule(
@@ -71,8 +107,8 @@ if __name__ == "__main__":
             num_workers=args.num_workers,
             n_mfcc=N_MFCC,
             sr=SR,
-            k=5,
-            p=3,
+            k=args.k,
+            p=args.p,
             steps_per_epoch=args.steps,
             val_steps_per_epoch=25,
         )

@@ -90,12 +90,14 @@ class Model(L.LightningModule):
         self,
         input_dim: int,
         lr: float,
-        embedding_dim: int = 64,
-        dropout: float = 0.3,
+        margin: float,
+        embedding_dim: int,
+        dropout: float,
         l2_normalize: bool = True,
     ):
         super().__init__()
         self.lr = lr
+        self.margin = margin
         self.input_dim = int(input_dim)
         self.embedding_dim = embedding_dim
         self.l2_normalize = l2_normalize
@@ -138,7 +140,7 @@ class Model(L.LightningModule):
     def _common_step(self, batch, batch_idx):
         x, lengths, y = batch  # x: (B, T, input_dim)
         embeddings = self.forward(x, lengths)  # (B, embedding_dim)
-        loss = batch_hard_triplet_loss(embeddings, y, 1.0)
+        loss = batch_hard_triplet_loss(embeddings, y, self.margin)
         return loss, embeddings, y
 
     def training_step(self, batch, batch_idx):
@@ -191,6 +193,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
         input_dim: int,
         embedding_dim: int,
         lr: float,
+        margin: float,
         channels: int,
         l2_normalize: bool = True,
     ):
@@ -199,6 +202,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
         self.embedding_dim = int(embedding_dim)
         self.l2_normalize = l2_normalize
         self.lr = lr
+        self.margin = margin
 
         self.net = nn.Sequential(
             nn.Conv1d(input_dim, channels, kernel_size=5, padding=2, bias=False),
@@ -257,7 +261,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
     def _common_step(self, batch, batch_idx):
         x, lengths, y = batch  # x: (B, T, input_dim)
         embeddings = self.forward(x, lengths)  # (B, embedding_dim)
-        loss = batch_hard_triplet_loss(embeddings, y, 1.0)
+        loss = batch_hard_triplet_loss(embeddings, y, self.margin)
         return loss, embeddings, y
 
     def training_step(self, batch, batch_idx):
