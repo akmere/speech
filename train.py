@@ -1,7 +1,7 @@
 import argparse
 import torch
 import lightning as L
-from model import Model
+from model import ConvStatsPoolEncoder, Model
 from dataset import DataModule, cache_mfccs
 from speech_commands import speech_commands_dataset_info
 
@@ -44,6 +44,12 @@ if __name__ == "__main__":
         default=0.003,
         help="learning rate",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gru",
+        help="model type",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -52,7 +58,14 @@ if __name__ == "__main__":
         print(f"Using accelerator: {accelerator}")
         N_MFCC = 40
         SR = 16000
-        model = Model(N_MFCC, args.lr, 64, 0.3, True)
+        if args.model == "conv":
+            model = ConvStatsPoolEncoder(
+                N_MFCC, embedding_dim=64, lr=args.lr, channels=128, l2_normalize=True
+            )
+        else:
+            model = Model(N_MFCC, args.lr, 64, 0.3, True)
+        print("Model")
+        print(model)
         dm = DataModule(
             dataset_info=speech_commands_dataset_info,
             num_workers=args.num_workers,

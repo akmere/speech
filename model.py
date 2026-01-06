@@ -183,3 +183,122 @@ class Model(L.LightningModule):
         self,
     ):
         return optim.Adam(self.parameters(), lr=self.lr)
+
+
+class ConvStatsPoolEncoder(L.LightningModule):
+    def __init__(
+        self,
+        input_dim: int,
+        embedding_dim: int,
+        lr: float,
+        channels: int,
+        l2_normalize: bool = True,
+    ):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.embedding_dim = int(embedding_dim)
+        self.l2_normalize = l2_normalize
+        self.lr = lr
+
+        self.net = nn.Sequential(
+            nn.Conv1d(input_dim, channels, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+        )
+
+        # stats pooling produces (mean||std) => 2*channels
+        self.proj = nn.Sequential(
+            nn.Linear(2 * channels, 2 * channels),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * channels, embedding_dim),
+        )
+
+    def forward(
+        self, x: torch.Tensor, lengths: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        # x: (B,T,F) -> (B,F,T)
+        x = x.transpose(1, 2)
+
+        h = self.net(x)  # (B,C,T)
+        B, C, T = h.shape
+
+        if lengths is None:
+            mean = h.mean(dim=2)
+            std = h.std(dim=2, unbiased=False)
+        else:
+            if lengths.dtype != torch.int64:
+                lengths = lengths.to(torch.int64)
+            lengths = lengths.clamp(min=1, max=T)
+
+            # mask: (B,T) True for valid frames
+            t = torch.arange(T, device=h.device).unsqueeze(0)  # (1,T)
+            mask = t < lengths.unsqueeze(1)  # (B,T)
+            mask_f = mask.unsqueeze(1).to(h.dtype)  # (B,1,T)
+
+            denom = mask_f.sum(dim=2).clamp_min(1.0)  # (B,1)
+            mean = (h * mask_f).sum(dim=2) / denom  # (B,C)
+
+            var = ((h - mean.unsqueeze(2)) ** 2 * mask_f).sum(dim=2) / denom
+            std = torch.sqrt(var.clamp_min(1e-8))  # (B,C)
+
+        pooled = torch.cat([mean, std], dim=1)  # (B,2C)
+        emb = self.proj(pooled)  # (B,D)
+
+        if self.l2_normalize:
+            emb = F.normalize(emb, p=2, dim=1)
+        return emb
+
+    def _common_step(self, batch, batch_idx):
+        x, lengths, y = batch  # x: (B, T, input_dim)
+        embeddings = self.forward(x, lengths)  # (B, embedding_dim)
+        loss = batch_hard_triplet_loss(embeddings, y, 1.0)
+        return loss, embeddings, y
+
+    def training_step(self, batch, batch_idx):
+        loss, scores, y = self._common_step(batch, batch_idx)
+        self.log_dict(
+            {
+                "train_loss": loss,
+            },
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        loss, scores, y = self._common_step(batch, batch_idx)
+        self.log("val_loss", loss)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        loss, scores, y = self._common_step(batch, batch_idx)
+        self.log("test_loss", loss)
+        return loss
+
+    def on_train_epoch_end(self):
+        epoch = self.current_epoch
+        train_loss = self.trainer.callback_metrics.get("train_loss")
+        if train_loss is not None:
+            self.print(
+                f"epoch={epoch} train_loss={train_loss.detach().cpu().item():.6f}"
+            )
+
+    def on_validation_epoch_end(self):
+        epoch = self.current_epoch
+        validation_loss = self.trainer.callback_metrics.get("val_loss")
+        if validation_loss is not None:
+            self.print(
+                f"epoch={epoch} validation_loss={validation_loss.detach().cpu().item():.6f}"
+            )
+
+    def configure_optimizers(
+        self,
+    ):
+        return optim.Adam(self.parameters(), lr=self.lr)
