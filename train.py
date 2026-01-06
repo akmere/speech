@@ -4,9 +4,16 @@ import lightning as L
 from model import ConvStatsPoolEncoder, Model
 from dataset import DataModule, cache_mfccs
 from speech_commands import speech_commands_dataset_info
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
+import os
+import wandb
+
+MODEL_PATH: str = "trained_models/"
 
 
 if __name__ == "__main__":
+    os.makedirs(MODEL_PATH, exist_ok=True)
     parser = argparse.ArgumentParser(description="Speech Commands a2wv (training)")
     parser.add_argument(
         "--cache",
@@ -113,11 +120,29 @@ if __name__ == "__main__":
             val_steps_per_epoch=25,
         )
         dm.prepare_data()
+        ckpt_dir: str = args.model
+        wandb.init(
+            project="ssp2025p",
+            #    entity=WANDB_NAME,
+            name=ckpt_dir,
+            config={},
+            sync_tensorboard=True,
+        )
+        wandb_logger = WandbLogger()
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=os.path.join(f"{MODEL_PATH}", ckpt_dir),
+            save_top_k=1,
+            verbose=True,
+            monitor="val_loss",
+            mode="min",
+        )
         trainer = L.Trainer(
             accelerator=accelerator,
             devices=args.devices,
             min_epochs=1,
             max_epochs=args.epochs,
+            enable_checkpointing=True,
+            callbacks=[checkpoint_callback],
         )
         trainer.fit(model, dm)
         trainer.validate(model, dm)

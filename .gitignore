@@ -17,3 +17,5 @@ lightning_logs/
 data.zip
 a2wv.pt
 mfcc_cache/
+wandb/
+trained_models/

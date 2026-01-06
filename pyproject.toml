@@ -9,7 +9,9 @@ dependencies = [
     "librosa>=0.11.0",
     "lightning>=2.6.0",
     "matplotlib>=3.10.8",
+    "tensorboard>=2.20.0",
     "torch",
+    "wandb>=0.23.1",
 ]
 
 [[tool.uv.index]]
