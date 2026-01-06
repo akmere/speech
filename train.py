@@ -138,7 +138,7 @@ if __name__ == "__main__":
             #    entity=WANDB_NAME,
             name=ckpt_dir,
             config=config,
-            sync_tensorboard=False,
+            sync_tensorboard=True,
         )
         wandb_logger = WandbLogger()
         checkpoint_callback = ModelCheckpoint(
@@ -155,7 +155,8 @@ if __name__ == "__main__":
             max_epochs=args.epochs,
             enable_checkpointing=True,
             callbacks=[checkpoint_callback],
+            num_sanity_val_steps=0,
         )
         trainer.fit(model, dm)
-        trainer.validate(model, dm)
+        # trainer.validate(model, dm)
         trainer.test(model, dm)
