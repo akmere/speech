@@ -157,6 +157,6 @@ if __name__ == "__main__":
             callbacks=[checkpoint_callback],
             num_sanity_val_steps=0,
         )
-        trainer.fit(model, dm)
+        trainer.fit(model, datamodule=dm)
         # trainer.validate(model, dm)
-        trainer.test(model, dm)
+        trainer.test(model, datamodule=dm)
