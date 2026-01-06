@@ -16,15 +16,21 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--steps",
-        type=str,
+        type=int,
         default=100,
         help="dataset to cache mfccs for",
     )
     parser.add_argument(
         "--epochs",
-        type=str,
+        type=int,
         default=20,
         help="dataset to cache mfccs for",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="DataLoader workers (set >0 after confirming stability)",
     )
     args = parser.parse_args()
     if args.cache:
@@ -37,7 +43,7 @@ if __name__ == "__main__":
         model = Model(N_MFCC, 0.003, 64, 0.3, True)
         dm = DataModule(
             dataset_info=speech_commands_dataset_info,
-            num_workers=4,
+            num_workers=args.num_workers,
             n_mfcc=N_MFCC,
             sr=SR,
             k=5,
@@ -48,7 +54,7 @@ if __name__ == "__main__":
         dm.prepare_data()
         trainer = L.Trainer(
             accelerator=accelerator,
-            devices="auto",
+            devices=(1 if accelerator == "cpu" else "auto"),
             min_epochs=1,
             max_epochs=args.epochs,
         )
