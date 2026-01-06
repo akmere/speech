@@ -85,7 +85,7 @@ def batch_hard_triplet_loss_cosine(
     return loss.mean() if loss.numel() else torch.tensor(0.0, device=embeddings.device)
 
 
-class Model(L.LightningModule):
+class GRU(L.LightningModule):
     def __init__(
         self,
         input_dim: int,

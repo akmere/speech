@@ -1,7 +1,7 @@
 import argparse
 import torch
 import lightning as L
-from model import ConvStatsPoolEncoder, Model
+from model import ConvStatsPoolEncoder, GRU
 from dataset import DataModule, cache_mfccs
 from speech_commands import speech_commands_dataset_info
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -72,14 +72,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--k",
         type=int,
-        default=5,
+        default=3,
         help="k in batch triplet loss",
     )
     parser.add_argument(
         "--p",
         type=float,
-        default=3,
+        default=5,
         help="p in batch triplet loss",
+    )
+    parser.add_argument(
+        "--l2",
+        help="l2 normalization",
     )
     args = parser.parse_args()
     if args.cache:
@@ -98,6 +102,7 @@ if __name__ == "__main__":
             "val_steps_per_epoch": 25,
             "k": args.k,
             "p": args.p,
+            "l2": args.l2 is not None,
         }
         if args.model == "conv":
             config.update({"channels": 128})
@@ -106,21 +111,23 @@ if __name__ == "__main__":
                 embedding_dim=config["embedding_dim"],
                 lr=config["lr"],
                 channels=config["channels"],
-                l2_normalize=True,
+                l2_normalize=config["l2"],
                 margin=config["margin"],
             )
         else:
             config.update({"dropout": args.dropout})
-            model = Model(
+            model = GRU(
                 input_dim=config["n_mfcc"],
                 lr=config["lr"],
                 embedding_dim=config["embedding_dim"],
                 dropout=config["dropout"],
                 margin=config["margin"],
-                l2_normalize=True,
+                l2_normalize=config["l2"],
             )
         print("Model")
         print(model)
+        print("config")
+        print(config)
         dm = DataModule(
             dataset_info=speech_commands_dataset_info,
             num_workers=args.num_workers,
