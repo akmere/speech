@@ -89,22 +89,34 @@ if __name__ == "__main__":
         print(f"Using accelerator: {accelerator}")
         N_MFCC = 40
         SR = 16000
+        config = {
+            "lr": args.lr,
+            "embedding_dim": 64,
+            "margin": args.margin,
+            "n_mfcc": N_MFCC,
+            "steps_per_epoch": args.steps,
+            "val_steps_per_epoch": 25,
+            "k": args.k,
+            "p": args.p,
+        }
         if args.model == "conv":
+            config.update({"channels": 128})
             model = ConvStatsPoolEncoder(
-                N_MFCC,
-                embedding_dim=64,
-                lr=args.lr,
-                channels=128,
+                input_dim=config["n_mfcc"],
+                embedding_dim=config["embedding_dim"],
+                lr=config["lr"],
+                channels=config["channels"],
                 l2_normalize=True,
-                margin=args.margin,
+                margin=config["margin"],
             )
         else:
+            config.update({"dropout": args.dropout})
             model = Model(
-                N_MFCC,
-                args.lr,
-                embedding_dim=64,
-                dropout=args.dropout,
-                margin=args.margin,
+                input_dim=config["n_mfcc"],
+                lr=config["lr"],
+                embedding_dim=config["embedding_dim"],
+                dropout=config["dropout"],
+                margin=config["margin"],
                 l2_normalize=True,
             )
         print("Model")
@@ -112,12 +124,12 @@ if __name__ == "__main__":
         dm = DataModule(
             dataset_info=speech_commands_dataset_info,
             num_workers=args.num_workers,
-            n_mfcc=N_MFCC,
+            n_mfcc=config["n_mfcc"],
             sr=SR,
-            k=args.k,
-            p=args.p,
-            steps_per_epoch=args.steps,
-            val_steps_per_epoch=25,
+            k=config["k"],
+            p=config["p"],
+            steps_per_epoch=config["steps_per_epoch"],
+            val_steps_per_epoch=config["val_steps_per_epoch"],
         )
         dm.prepare_data()
         ckpt_dir: str = args.model
@@ -125,8 +137,8 @@ if __name__ == "__main__":
             project="ssp2025p",
             #    entity=WANDB_NAME,
             name=ckpt_dir,
-            config={},
-            sync_tensorboard=True,
+            config=config,
+            sync_tensorboard=False,
         )
         wandb_logger = WandbLogger()
         checkpoint_callback = ModelCheckpoint(
