@@ -124,7 +124,7 @@ class Model(L.LightningModule):
                 )
 
             packed = nn.utils.rnn.pack_padded_sequence(
-                x, lengths, batch_first=True, enforce_sorted=False
+                x, lengths.cpu(), batch_first=True, enforce_sorted=False
             )
             _, h_n = self.gru(packed)
         else:
