@@ -32,6 +32,12 @@ if __name__ == "__main__":
         default=4,
         help="DataLoader workers (set >0 after confirming stability)",
     )
+    parser.add_argument(
+        "--devices",
+        type=int,
+        default=1,
+        help="number of devices (set 1 to avoid multi-process)",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -54,7 +60,7 @@ if __name__ == "__main__":
         dm.prepare_data()
         trainer = L.Trainer(
             accelerator=accelerator,
-            devices=(1 if accelerator == "cpu" else "auto"),
+            devices=args.devices,
             min_epochs=1,
             max_epochs=args.epochs,
         )
