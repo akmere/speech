@@ -14,6 +14,18 @@ if __name__ == "__main__":
         default=None,
         help="dataset to cache mfccs for",
     )
+    parser.add_argument(
+        "--steps",
+        type=str,
+        default=100,
+        help="dataset to cache mfccs for",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=str,
+        default=20,
+        help="dataset to cache mfccs for",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -30,12 +42,15 @@ if __name__ == "__main__":
             sr=SR,
             k=5,
             p=3,
-            steps_per_epoch=100,
+            steps_per_epoch=args.steps,
             val_steps_per_epoch=25,
         )
         dm.prepare_data()
         trainer = L.Trainer(
-            accelerator=accelerator, devices="auto", min_epochs=1, max_epochs=3
+            accelerator=accelerator,
+            devices="auto",
+            min_epochs=1,
+            max_epochs=args.epochs,
         )
         trainer.fit(model, dm)
         trainer.validate(model, dm)
