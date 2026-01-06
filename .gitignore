@@ -11,7 +11,9 @@ wheels/
 
 # Other
 data/
+cache/
+tmp/
+lightning_logs/
 data.zip
 a2wv.pt
 mfcc_cache/
-lol/

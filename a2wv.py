@@ -170,7 +170,6 @@ class Audio2WordVectorEncoder(nn.Module):
         return emb
 
 
-# ...existing code...
 class ConvStatsPoolEncoder(nn.Module):
     """CNN (time) + masked statistics pooling -> utterance embedding.
 
