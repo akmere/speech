@@ -83,10 +83,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--l2",
+        action="store_true",
         help="l2 normalization",
     )
     parser.add_argument(
         "--det-curves",
+        action="store_true",
         help="compute DET curves after validation epoch",
     )
     parser.add_argument(
