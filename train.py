@@ -1,7 +1,7 @@
 import argparse
 import torch
 import lightning as L
-from model import ConvStatsPoolEncoder, GRU
+from model import ConvStatsPoolEncoder, GRUEncoder
 from dataset import DataModule, cache_mfccs, draw_embedding_map, extract_or_cache_mfcc
 from speech_commands import speech_commands_dataset_info
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -85,6 +85,16 @@ if __name__ == "__main__":
         "--l2",
         help="l2 normalization",
     )
+    parser.add_argument(
+        "--det-curves",
+        help="compute DET curves after validation epoch",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=1.0,
+        help="threshold for classification",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -103,6 +113,7 @@ if __name__ == "__main__":
             "k": args.k,
             "p": args.p,
             "l2": args.l2 is not None,
+            "threshold": args.threshold,
         }
         if args.model == "conv":
             config.update({"channels": 128})
@@ -113,16 +124,22 @@ if __name__ == "__main__":
                 channels=config["channels"],
                 l2_normalize=config["l2"],
                 margin=config["margin"],
+                threshold=config["threshold"],
+                dataset_info=speech_commands_dataset_info,
+                det_curves=args.det_curves is not None,
             )
         else:
             config.update({"dropout": args.dropout})
-            model = GRU(
+            model = GRUEncoder(
                 input_dim=config["n_mfcc"],
                 lr=config["lr"],
                 embedding_dim=config["embedding_dim"],
                 dropout=config["dropout"],
                 margin=config["margin"],
                 l2_normalize=config["l2"],
+                threshold=config["threshold"],
+                dataset_info=speech_commands_dataset_info,
+                det_curves=args.det_curves is not None,
             )
         print("Model")
         print(model)

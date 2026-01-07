@@ -25,6 +25,66 @@ def extract_dataset_word_filename(file_path: str) -> Tuple[str, str, str]:
     return (dataset, word, filename)
 
 
+def draw_embedding_map_from_lists(
+    embeddings: list[torch.Tensor],
+    labels: list[str],
+    *,
+    perplexity: float = 30.0,
+    title: str = "t-SNE Embedding Map",
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Convenience wrapper around draw_embedding_map().
+
+    Args:
+      embeddings: list of 1D tensors (embedding vectors), length N.
+      labels: list of string labels, length N.
+    """
+    if len(embeddings) != len(labels):
+        raise ValueError(
+            f"draw_embedding_map_from_lists: embeddings and labels must have same length "
+            f"({len(embeddings)} vs {len(labels)})."
+        )
+    if len(embeddings) == 0:
+        print("draw_embedding_map_from_lists: empty input, skipping plot.")
+        return
+
+    # Stack embeddings into (N, D)
+    emb0 = embeddings[0].detach().flatten()
+    d = int(emb0.numel())
+    for i, e in enumerate(embeddings):
+        e_flat = e.detach().flatten()
+        if int(e_flat.numel()) != d:
+            raise ValueError(
+                f"draw_embedding_map_from_lists: embedding at index {i} has dim {int(e_flat.numel())}, expected {d}."
+            )
+
+    X = torch.stack([e.detach().flatten() for e in embeddings], dim=0)
+
+    # Map string labels -> int ids (stable order by first appearance)
+    label_to_id: dict[str, int] = {}
+    labels_to_strings: list[str] = []
+    y_ids: list[int] = []
+    for s in labels:
+        if s not in label_to_id:
+            label_to_id[s] = len(labels_to_strings)
+            labels_to_strings.append(s)
+        y_ids.append(label_to_id[s])
+
+    y = torch.tensor(y_ids, dtype=torch.long)
+
+    # Delegate plotting + perplexity clamping to the existing function
+    return draw_embedding_map(
+        X,
+        y,
+        perplexity=perplexity,
+        title=title,
+        labels_to_strings=labels_to_strings,
+        save_path=save_path,
+        show=show,
+    )
+
+
 def draw_embedding_map(
     embeddings: torch.Tensor,
     labels: torch.Tensor,
@@ -75,53 +135,71 @@ def draw_embedding_map(
     )
     embeddings_2d = tsne.fit_transform(X)
 
+    # Build a stable label->color mapping so we can use a discrete colormap with
+    # enough unique colors for many classes (tab10 repeats after 10).
+    unique_labels = sorted({int(v) for v in y.tolist()})
+    label_to_color_idx: dict[int, int] = {lab: i for i, lab in enumerate(unique_labels)}
+    color_ids = [label_to_color_idx[int(v)] for v in y.tolist()]
+    n_classes = max(1, len(unique_labels))
+
+    # Pick a categorical colormap. Prefer tab10/tab20 when possible; fall back
+    # to an HSV wheel for larger numbers of classes.
+    cmap_name = "tab10" if n_classes <= 10 else ("tab20" if n_classes <= 20 else "hsv")
+    try:
+        # Matplotlib 3.5+: resampled() gives an N-sized discrete cmap.
+        cmap = matplotlib.colormaps.get_cmap(cmap_name).resampled(n_classes)
+    except Exception:
+        # Older Matplotlib: get_cmap(name, lut)
+        cmap = plt.get_cmap(cmap_name, n_classes)
+
     fig = plt.figure(figsize=(10, 10))
-    scatter = plt.scatter(
+    plt.scatter(
         embeddings_2d[:, 0],
         embeddings_2d[:, 1],
-        c=y,
-        cmap="tab10",
+        c=color_ids,
+        cmap=cmap,
+        vmin=-0.5,
+        vmax=n_classes - 0.5,
         alpha=0.7,
     )
-    if labels_to_strings is None:
-        plt.legend(*scatter.legend_elements(), title="Classes")
-    else:
-        # Build a legend with human-readable class names (global lookup by label id)
-        import matplotlib.lines as mlines
+    # Build a legend with consistent colors. If labels_to_strings is provided,
+    # use it as a global lookup by label id; otherwise show numeric ids.
+    import matplotlib.lines as mlines
 
-        unique_labels = sorted({int(v) for v in y.tolist()})
-        if unique_labels:
-            min_lab = min(unique_labels)
-            max_lab = max(unique_labels)
-            if min_lab < 0:
-                raise ValueError(
-                    f"draw_embedding_map: negative label id {min_lab} cannot index labels_to_strings."
-                )
-            if max_lab >= len(labels_to_strings):
-                raise ValueError(
-                    "draw_embedding_map: label id out of range for labels_to_strings "
-                    f"(max label={max_lab}, len(labels_to_strings)={len(labels_to_strings)})."
-                )
-
-        handles: list[mlines.Line2D] = []
-        legend_names: list[str] = []
-        for lab in unique_labels:
-            color = scatter.cmap(scatter.norm(lab))
-            name = labels_to_strings[lab]
-            handles.append(
-                mlines.Line2D(
-                    [],
-                    [],
-                    linestyle="none",
-                    marker="o",
-                    markersize=8,
-                    markerfacecolor=color,
-                    markeredgecolor=color,
-                    alpha=0.7,
-                )
+    if labels_to_strings is not None and unique_labels:
+        min_lab = min(unique_labels)
+        max_lab = max(unique_labels)
+        if min_lab < 0:
+            raise ValueError(
+                f"draw_embedding_map: negative label id {min_lab} cannot index labels_to_strings."
             )
-            legend_names.append(name)
+        if max_lab >= len(labels_to_strings):
+            raise ValueError(
+                "draw_embedding_map: label id out of range for labels_to_strings "
+                f"(max label={max_lab}, len(labels_to_strings)={len(labels_to_strings)})."
+            )
 
+    handles: list[mlines.Line2D] = []
+    legend_names: list[str] = []
+    for lab in unique_labels:
+        idx = label_to_color_idx[lab]
+        color = cmap(idx)
+        name = labels_to_strings[lab] if labels_to_strings is not None else str(lab)
+        handles.append(
+            mlines.Line2D(
+                [],
+                [],
+                linestyle="none",
+                marker="o",
+                markersize=8,
+                markerfacecolor=color,
+                markeredgecolor=color,
+                alpha=0.7,
+            )
+        )
+        legend_names.append(name)
+
+    if handles:
         plt.legend(handles, legend_names, title="Classes")
 
     plt.title(f"{title} (perplexity={safe_perplexity:g}, n={n_samples})")
@@ -154,10 +232,36 @@ def calculate_embedding_for_path(
     )
 
 
+def get_keyword_embeddings(
+    model: L.LightningModule,
+    keywords: list[str],
+    dataset_info,
+) -> dict[str, torch.Tensor]:
+    """Compute embeddings for a list of keywords using the given model.
+
+    Returns a dict mapping keyword to embedding tensor.
+    """
+    keyword_embeddings: dict[str, torch.Tensor] = {}
+    model.eval()
+    with torch.no_grad():
+        for keyword in keywords:
+            samples = dataset_info.sample_word(keyword, n=10)
+            embeddings: list[torch.Tensor] = []
+            for sample in samples:
+                dataset, word, filename = extract_dataset_word_filename(sample)
+                mfcc = extract_or_cache_mfcc(dataset, word, filename)
+                embedding = model(mfcc.unsqueeze(0)).squeeze(0)
+                embeddings.append(embedding)
+            # Average embeddings for the keyword
+            keyword_embedding = torch.stack(embeddings, dim=0).mean(dim=0)
+            keyword_embeddings[keyword] = keyword_embedding
+    return keyword_embeddings
+
+
 class DatasetInfo:
     prepare_data: Callable[[], str]
     dataset_name: str
-    words: list[str]
+    seen_words: list[str]
     unseen_words: list[str]
 
     def __init__(
@@ -169,7 +273,7 @@ class DatasetInfo:
     ):
         self.prepare_data = prepare_data
         self.dataset_name = dataset_name
-        self.words = words
+        self.seen_words = words
         self.unseen_words = unseen_words
 
     def dataset_path(self) -> str:
@@ -378,12 +482,15 @@ class DataModule(L.LightningDataModule):
     def setup(self, stage: str) -> None:
         self.whole_ds = DataDataset(
             self.dataset_path,
-            self.dataset_info.words + self.dataset_info.unseen_words,
+            self.dataset_info.seen_words + self.dataset_info.unseen_words,
             n_mfcc=self.n_mfcc,
             sr=self.sr,
         )
         self.seen_ds = DataDataset(
-            self.dataset_path, self.dataset_info.words, n_mfcc=self.n_mfcc, sr=self.sr
+            self.dataset_path,
+            self.dataset_info.seen_words,
+            n_mfcc=self.n_mfcc,
+            sr=self.sr,
         )
         self.train_ds, self.val_ds, self.test_ds = random_split(
             self.seen_ds, [0.8, 0.1, 0.1]
