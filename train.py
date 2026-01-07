@@ -84,11 +84,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--l2",
         action="store_true",
+        default=None,
         help="l2 normalization",
     )
     parser.add_argument(
         "--det-curves",
         action="store_true",
+        default=None,
         help="compute DET curves after validation epoch",
     )
     parser.add_argument(
@@ -115,6 +117,7 @@ if __name__ == "__main__":
             "k": args.k,
             "p": args.p,
             "l2": args.l2 is not None,
+            "det_curves": args.det_curves is not None,
             "threshold": args.threshold,
         }
         if args.model == "conv":
@@ -128,7 +131,7 @@ if __name__ == "__main__":
                 margin=config["margin"],
                 threshold=config["threshold"],
                 dataset_info=speech_commands_dataset_info,
-                det_curves=args.det_curves is not None,
+                det_curves=config["det_curves"],
             )
         else:
             config.update({"dropout": args.dropout})
@@ -141,7 +144,7 @@ if __name__ == "__main__":
                 l2_normalize=config["l2"],
                 threshold=config["threshold"],
                 dataset_info=speech_commands_dataset_info,
-                det_curves=args.det_curves is not None,
+                det_curves=config["det_curves"],
             )
         print("Model")
         print(model)
