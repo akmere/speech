@@ -11,6 +11,7 @@ import zipfile
 import librosa
 import random
 import shutil
+import tempfile
 
 DATA_PATH: str = "data"
 CACHE_PATH: str = "cache"
@@ -352,7 +353,22 @@ def cache_mfccs(dataset_name: str, sr: int = 16000, n_mfcc: int = 40):
         else:
             mfcc = extract_mfcc(wav_path, sr, n_mfcc)
             os.makedirs(os.path.dirname(cached_path), exist_ok=True)
-            torch.save(mfcc.cpu(), cached_path)
+            # Atomic write to avoid partially-written cache files on interrupt.
+            cache_dir = os.path.dirname(cached_path)
+            os.makedirs(cache_dir, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".mfcc_", suffix=".pt.tmp", dir=cache_dir
+            )
+            try:
+                os.close(fd)
+                torch.save(mfcc.cpu(), tmp_path)
+                os.replace(tmp_path, cached_path)
+            finally:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
         if (index + 1) % 100 == 0:
             print(f"{index + 1}/{total_len} cached [{total_omitted} omitted]")
 
@@ -372,10 +388,49 @@ def extract_or_cache_mfcc(
     in_cache: bool = os.path.exists(cached_path)
     if not in_cache:
         mfcc = extract_mfcc(wav_path, sr, n_mfcc)
-        os.makedirs(os.path.dirname(cached_path), exist_ok=True)
-        torch.save(mfcc.cpu(), cached_path)
+        cache_dir = os.path.dirname(cached_path)
+        os.makedirs(cache_dir, exist_ok=True)
+
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".mfcc_", suffix=".pt.tmp", dir=cache_dir
+        )
+        try:
+            os.close(fd)
+            torch.save(mfcc.cpu(), tmp_path)
+            os.replace(tmp_path, cached_path)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
     else:
-        mfcc = torch.load(cached_path, map_location="cpu")
+        # Cache can become corrupted if a previous run was interrupted mid-write.
+        # If load fails, recompute and overwrite atomically.
+        try:
+            mfcc = torch.load(cached_path, map_location="cpu")
+        except Exception:
+            try:
+                os.remove(cached_path)
+            except OSError:
+                pass
+            mfcc = extract_mfcc(wav_path, sr, n_mfcc)
+
+            cache_dir = os.path.dirname(cached_path)
+            os.makedirs(cache_dir, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".mfcc_", suffix=".pt.tmp", dir=cache_dir
+            )
+            try:
+                os.close(fd)
+                torch.save(mfcc.cpu(), tmp_path)
+                os.replace(tmp_path, cached_path)
+            finally:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
     return mfcc
 
 
