@@ -231,7 +231,7 @@ def calculate_missed_detection_and_false_positive_rates(
                     missed_seen_predictions += 1
                 seen_words_samples += 1
             else:
-                if predicted_word == word:
+                if predicted_word is not None:
                     false_positives += 1
                 unseen_words_samples += 1
     if total_samples == 0:
