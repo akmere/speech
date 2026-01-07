@@ -199,6 +199,18 @@ def calculate_missed_detection_and_false_positive_rates(
     words: list[str],
     threshold: float,
 ) -> tuple[float, float]:
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+
+    # Ensure the keyword embedding matrix lives on the same device as the model.
+    if keyword_embedding_index.embeddings.device != model_device:
+        keyword_embedding_index = KeywordEmbeddingIndex(
+            keyword_embedding_index.keywords,
+            keyword_embedding_index.embeddings.to(model_device),
+        )
+
     total_samples: int = 0
     seen_words_samples: int = 0
     unseen_words_samples: int = 0
@@ -208,7 +220,7 @@ def calculate_missed_detection_and_false_positive_rates(
         samples = dataset_info.sample_word(word, n=100)
         for sample in samples:
             dataset, word, filename = extract_dataset_word_filename(sample)
-            mfcc = extract_or_cache_mfcc(dataset, word, filename)
+            mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
             embedding = model(mfcc.unsqueeze(0)).squeeze(0)
             predicted_word = classify_embedding(
                 embedding, keyword_embedding_index, threshold=threshold
@@ -416,7 +428,9 @@ class GRUEncoder(L.LightningModule):
         keyword_embeddings = get_keyword_embeddings(
             self, self.dataset_info.seen_words, self.dataset_info
         )
-        keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(keyword_embeddings)
+        keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
+            keyword_embeddings, device=self.device
+        )
         mdr, fpr = calculate_missed_detection_and_false_positive_rates(
             self,
             keyword_embedding_index,
@@ -584,7 +598,9 @@ class ConvStatsPoolEncoder(L.LightningModule):
         keyword_embeddings = get_keyword_embeddings(
             self, self.dataset_info.seen_words, self.dataset_info
         )
-        keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(keyword_embeddings)
+        keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
+            keyword_embeddings, device=self.device
+        )
         mdr, fpr = calculate_missed_detection_and_false_positive_rates(
             self,
             keyword_embedding_index,

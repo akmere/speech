@@ -227,9 +227,12 @@ def calculate_embedding_for_path(
 ) -> torch.Tensor:
     dataset, word, filename = extract_dataset_word_filename(wav_path)
     model.eval()
-    return (model(extract_or_cache_mfcc(dataset, word, filename).unsqueeze(0))).squeeze(
-        0
-    )
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+    mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
+    return model(mfcc.unsqueeze(0)).squeeze(0)
 
 
 def get_keyword_embeddings(
@@ -243,13 +246,17 @@ def get_keyword_embeddings(
     """
     keyword_embeddings: dict[str, torch.Tensor] = {}
     model.eval()
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
     with torch.no_grad():
         for keyword in keywords:
             samples = dataset_info.sample_word(keyword, n=10)
             embeddings: list[torch.Tensor] = []
             for sample in samples:
                 dataset, word, filename = extract_dataset_word_filename(sample)
-                mfcc = extract_or_cache_mfcc(dataset, word, filename)
+                mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
                 embedding = model(mfcc.unsqueeze(0)).squeeze(0)
                 embeddings.append(embedding)
             # Average embeddings for the keyword
