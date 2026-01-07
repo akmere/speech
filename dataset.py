@@ -16,17 +16,176 @@ DATA_PATH: str = "data"
 CACHE_PATH: str = "cache"
 
 
+def extract_dataset_word_filename(file_path: str) -> Tuple[str, str, str]:
+    """Deconstruct file path into (dataset, word, filename)"""
+    parts = file_path.split(os.sep)
+    dataset = parts[-3]
+    word = parts[-2]
+    filename = parts[-1]
+    return (dataset, word, filename)
+
+
+def draw_embedding_map(
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    perplexity: float = 30.0,
+    title: str = "t-SNE Embedding Map",
+    labels_to_strings: list[str] | None = None,
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Draw 2D embedding map using t-SNE.
+
+    Notes:
+      - t-SNE requires 0 < perplexity < n_samples.
+      - In headless/non-interactive environments (e.g. Matplotlib backend 'Agg'),
+        the plot is saved to disk instead of calling plt.show().
+
+    labels_to_strings:
+      Global lookup table: labels_to_strings[label_id] -> human readable name.
+      Label ids may be sparse and do not need to start at 0, but must be valid
+      indices into labels_to_strings.
+    """
+    from sklearn.manifold import TSNE
+    import matplotlib
+    import matplotlib.pyplot as plt
+    import time
+
+    X = embeddings.detach().cpu().numpy()
+    y = labels.detach().cpu().numpy()
+    n_samples = int(X.shape[0])
+
+    # Nothing useful to plot
+    if n_samples < 2:
+        print("draw_embedding_map: n_samples < 2, skipping plot.")
+        return
+
+    # t-SNE constraint: perplexity must be strictly less than n_samples
+    safe_perplexity = float(perplexity)
+    safe_perplexity = min(safe_perplexity, float(n_samples - 1))
+    safe_perplexity = max(1.0, safe_perplexity)
+
+    tsne = TSNE(
+        n_components=2,
+        perplexity=safe_perplexity,
+        init="pca",
+        learning_rate="auto",
+        random_state=0,
+    )
+    embeddings_2d = tsne.fit_transform(X)
+
+    fig = plt.figure(figsize=(10, 10))
+    scatter = plt.scatter(
+        embeddings_2d[:, 0],
+        embeddings_2d[:, 1],
+        c=y,
+        cmap="tab10",
+        alpha=0.7,
+    )
+    if labels_to_strings is None:
+        plt.legend(*scatter.legend_elements(), title="Classes")
+    else:
+        # Build a legend with human-readable class names (global lookup by label id)
+        import matplotlib.lines as mlines
+
+        unique_labels = sorted({int(v) for v in y.tolist()})
+        if unique_labels:
+            min_lab = min(unique_labels)
+            max_lab = max(unique_labels)
+            if min_lab < 0:
+                raise ValueError(
+                    f"draw_embedding_map: negative label id {min_lab} cannot index labels_to_strings."
+                )
+            if max_lab >= len(labels_to_strings):
+                raise ValueError(
+                    "draw_embedding_map: label id out of range for labels_to_strings "
+                    f"(max label={max_lab}, len(labels_to_strings)={len(labels_to_strings)})."
+                )
+
+        handles: list[mlines.Line2D] = []
+        legend_names: list[str] = []
+        for lab in unique_labels:
+            color = scatter.cmap(scatter.norm(lab))
+            name = labels_to_strings[lab]
+            handles.append(
+                mlines.Line2D(
+                    [],
+                    [],
+                    linestyle="none",
+                    marker="o",
+                    markersize=8,
+                    markerfacecolor=color,
+                    markeredgecolor=color,
+                    alpha=0.7,
+                )
+            )
+            legend_names.append(name)
+
+        plt.legend(handles, legend_names, title="Classes")
+
+    plt.title(f"{title} (perplexity={safe_perplexity:g}, n={n_samples})")
+
+    backend = matplotlib.get_backend().lower()
+    interactive_backend = backend not in {"agg", "pdf", "ps", "svg", "cairo"}
+
+    # If we can't show (Agg/headless), save instead.
+    should_show = bool(show and interactive_backend and os.environ.get("DISPLAY"))
+    if should_show:
+        plt.show()
+    else:
+        if save_path is None:
+            os.makedirs("plots", exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            save_path = f"plots/tsne_{stamp}.png"
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+        print(f"draw_embedding_map: saved plot to {save_path} (backend={backend}).")
+
+    plt.close(fig)
+
+
+def calculate_embedding_for_path(
+    model: L.LightningModule, wav_path: str
+) -> torch.Tensor:
+    dataset, word, filename = extract_dataset_word_filename(wav_path)
+    model.eval()
+    return (model(extract_or_cache_mfcc(dataset, word, filename).unsqueeze(0))).squeeze(
+        0
+    )
+
+
 class DatasetInfo:
     prepare_data: Callable[[], str]
     dataset_name: str
     words: list[str]
+    unseen_words: list[str]
 
     def __init__(
-        self, prepare_data: Callable[[], str], dataset_name: str, words: list[str]
+        self,
+        prepare_data: Callable[[], str],
+        dataset_name: str,
+        words: list[str],
+        unseen_words: list[str],
     ):
         self.prepare_data = prepare_data
         self.dataset_name = dataset_name
         self.words = words
+        self.unseen_words = unseen_words
+
+    def dataset_path(self) -> str:
+        return os.path.join(DATA_PATH, self.dataset_name)
+
+    def word_path(self, word: str) -> str:
+        return os.path.join(self.dataset_path(), word)
+
+    def sample_word(self, word: str, n: int) -> list[str]:
+        word_dir: str = self.word_path(word)
+        all_files: list[str] = [
+            os.path.join(DATA_PATH, self.dataset_name, word, f)
+            for f in os.listdir(word_dir)
+            if os.path.isfile(os.path.join(word_dir, f)) and f.endswith(".wav")
+        ]
+        return random.sample(all_files, n)
 
 
 def extract_word_speaker_index(file_path: str) -> tuple[str, str, str]:
@@ -217,11 +376,17 @@ class DataModule(L.LightningDataModule):
             shutil.copytree(dataset_import_path, self.dataset_path)
 
     def setup(self, stage: str) -> None:
-        seen_ds = DataDataset(
+        self.whole_ds = DataDataset(
+            self.dataset_path,
+            self.dataset_info.words + self.dataset_info.unseen_words,
+            n_mfcc=self.n_mfcc,
+            sr=self.sr,
+        )
+        self.seen_ds = DataDataset(
             self.dataset_path, self.dataset_info.words, n_mfcc=self.n_mfcc, sr=self.sr
         )
         self.train_ds, self.val_ds, self.test_ds = random_split(
-            seen_ds, [0.8, 0.1, 0.1]
+            self.seen_ds, [0.8, 0.1, 0.1]
         )
 
     def _collate_fn(self, batch: List[Tuple[torch.Tensor, int]]):

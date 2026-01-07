@@ -96,6 +96,7 @@ class GRU(L.LightningModule):
         l2_normalize: bool = True,
     ):
         super().__init__()
+        self.save_hyperparameters()
         self.lr = lr
         self.margin = margin
         self.input_dim = int(input_dim)
@@ -198,6 +199,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
         l2_normalize: bool = True,
     ):
         super().__init__()
+        self.save_hyperparameters()
         self.input_dim = int(input_dim)
         self.embedding_dim = int(embedding_dim)
         self.l2_normalize = l2_normalize
@@ -286,6 +288,11 @@ class ConvStatsPoolEncoder(L.LightningModule):
         self.log("test_loss", loss)
         return loss
 
+    # def predict_step(self, batch, batch_idx):
+    #     loss, scores, y = self._common_step(batch, batch_idx)
+    #     preds = torch.argmax(scores, dim=1)
+    #     return preds
+
     def on_train_epoch_end(self):
         epoch = self.current_epoch
         train_loss = self.trainer.callback_metrics.get("train_loss")
@@ -306,3 +313,10 @@ class ConvStatsPoolEncoder(L.LightningModule):
         self,
     ):
         return optim.Adam(self.parameters(), lr=self.lr)
+
+
+def get_embeddings_for_word(
+    model: L.LightningModule,
+    word: str,
+):
+    pass

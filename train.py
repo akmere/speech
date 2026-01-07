@@ -2,7 +2,7 @@ import argparse
 import torch
 import lightning as L
 from model import ConvStatsPoolEncoder, GRU
-from dataset import DataModule, cache_mfccs
+from dataset import DataModule, cache_mfccs, draw_embedding_map, extract_or_cache_mfcc
 from speech_commands import speech_commands_dataset_info
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
@@ -167,3 +167,41 @@ if __name__ == "__main__":
         trainer.fit(model, datamodule=dm)
         # trainer.validate(model, dm)
         trainer.test(model, datamodule=dm)
+        # get some random samples from test_ds
+        # dm.setup(stage="train")
+        # for x, lengths, labels in dm.train_dataloader():
+        #     print("Sample batch from test set")
+        #     print("x:", x.shape)
+        #     print("labels:", labels)
+        #     print("Predictions:")
+
+        #     model.eval()
+        #     with torch.inference_mode():
+        #         # Run a direct forward pass so we get a Tensor (trainer.predict returns a list/None).
+        #         embeddings = model(x, lengths)
+
+        #     print("embeddings:", embeddings)
+        #     draw_embedding_map(
+        #         embeddings,
+        #         labels,
+        #         show=False,
+        #         save_path="plots/latest_tsne.png",
+        #         labels_to_strings=list(
+        #             seen_word + " (seen)" for seen_word in dm.dataset_info.words
+        #         )
+        #         + list(
+        #             unseen_word + " (unseen)"
+        #             for unseen_word in dm.dataset_info.unseen_words
+        #         ),
+        #     )
+        #     break
+        # print(
+        #     trainer.predict(
+        #         model,
+        #         torch.tensor(
+        #             extract_or_cache_mfcc(
+        #                 "speech_commands", "bed", "0a196374_nohash_0.wav"
+        #             )
+        #         ).unsqueeze(0),
+        #     )
+        # )

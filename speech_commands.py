@@ -72,5 +72,5 @@ def prepare_speech_commands():
 
 
 speech_commands_dataset_info = DatasetInfo(
-    prepare_speech_commands, "speech_commands", SEEN_WORDS
+    prepare_speech_commands, "speech_commands", SEEN_WORDS, UNSEEN_WORDS
 )
