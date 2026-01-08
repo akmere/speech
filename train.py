@@ -119,8 +119,9 @@ if __name__ == "__main__":
             "l2": args.l2 is not None,
             "det_curves": args.det_curves is not None,
             "threshold": args.threshold,
+            "model": args.model,
         }
-        if args.model == "conv":
+        if config["model"] == "conv":
             config.update({"channels": 128})
             model = ConvStatsPoolEncoder(
                 input_dim=config["n_mfcc"],
@@ -161,7 +162,7 @@ if __name__ == "__main__":
             val_steps_per_epoch=config["val_steps_per_epoch"],
         )
         dm.prepare_data()
-        ckpt_dir: str = args.model
+        ckpt_dir: str = config["model"]
         wandb.init(
             project="ssp2025p",
             #    entity=WANDB_NAME,
