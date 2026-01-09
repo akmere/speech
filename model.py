@@ -16,6 +16,7 @@ from dataset import (
     extract_dataset_word_filename,
     extract_or_cache_mfcc,
     get_keyword_embeddings,
+    draw_embeddings,
 )
 
 from matplotlib import pyplot as plt
@@ -546,6 +547,34 @@ class GRUEncoder(L.LightningModule):
                         "det_curves",
                         [wandb.Image(out_path, caption=f"DET curve epoch {epoch}")],
                     )
+            embeddings_path = os.path.join("plots", f"embeddings_epoch_{epoch}.png")
+            draw_embeddings(
+                save_path=embeddings_path,
+                dataset_info=self.dataset_info,
+                model=self,
+                words=[
+                    "yes",
+                    "no",
+                    "down",
+                    "three",
+                    "marvin",
+                    "tree",
+                    "backward",
+                    "forward",
+                    "follow",
+                    "visual",
+                ],
+            )
+            if isinstance(self.logger, WandbLogger):
+                self.logger.log_image(
+                    "embeddings",
+                    [
+                        wandb.Image(
+                            embeddings_path,
+                            caption=f"Embeddings epoch {epoch}",
+                        )
+                    ],
+                )
 
     def configure_optimizers(
         self,
@@ -731,6 +760,34 @@ class ConvStatsPoolEncoder(L.LightningModule):
                         "det_curves",
                         [wandb.Image(out_path, caption=f"DET curve epoch {epoch}")],
                     )
+            embeddings_path = os.path.join("plots", f"embeddings_epoch_{epoch}.png")
+            draw_embeddings(
+                save_path=embeddings_path,
+                dataset_info=self.dataset_info,
+                model=self,
+                words=[
+                    "yes",
+                    "no",
+                    "down",
+                    "three",
+                    "marvin",
+                    "tree",
+                    "backward",
+                    "forward",
+                    "follow",
+                    "visual",
+                ],
+            )
+            if isinstance(self.logger, WandbLogger):
+                self.logger.log_image(
+                    "embeddings",
+                    [
+                        wandb.Image(
+                            embeddings_path,
+                            caption=f"Embeddings epoch {epoch}",
+                        )
+                    ],
+                )
 
     def configure_optimizers(
         self,

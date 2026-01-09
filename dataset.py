@@ -17,6 +17,40 @@ DATA_PATH: str = "data"
 CACHE_PATH: str = "cache"
 
 
+class DatasetInfo:
+    prepare_data: Callable[[], str]
+    dataset_name: str
+    seen_words: list[str]
+    unseen_words: list[str]
+
+    def __init__(
+        self,
+        prepare_data: Callable[[], str],
+        dataset_name: str,
+        words: list[str],
+        unseen_words: list[str],
+    ):
+        self.prepare_data = prepare_data
+        self.dataset_name = dataset_name
+        self.seen_words = words
+        self.unseen_words = unseen_words
+
+    def dataset_path(self) -> str:
+        return os.path.join(DATA_PATH, self.dataset_name)
+
+    def word_path(self, word: str) -> str:
+        return os.path.join(self.dataset_path(), word)
+
+    def sample_word(self, word: str, n: int) -> list[str]:
+        word_dir: str = self.word_path(word)
+        all_files: list[str] = [
+            os.path.join(DATA_PATH, self.dataset_name, word, f)
+            for f in os.listdir(word_dir)
+            if os.path.isfile(os.path.join(word_dir, f)) and f.endswith(".wav")
+        ]
+        return random.sample(all_files, n)
+
+
 def extract_dataset_word_filename(file_path: str) -> Tuple[str, str, str]:
     """Deconstruct file path into (dataset, word, filename)"""
     parts = file_path.split(os.sep)
@@ -24,6 +58,44 @@ def extract_dataset_word_filename(file_path: str) -> Tuple[str, str, str]:
     word = parts[-2]
     filename = parts[-1]
     return (dataset, word, filename)
+
+
+def draw_embeddings(
+    save_path: str,
+    dataset_info: DatasetInfo,
+    model: L.LightningModule,
+    words: list[str],
+):
+    samples: list[str] = []
+    # k_seen_words: int = 5
+    # if len(dataset_info.seen_words) < k_seen_words:
+    #     k_seen_words = len(dataset_info.seen_words)
+    # k_unseen_words: int = 5
+    # if len(dataset_info.unseen_words) < k_unseen_words:
+    #     k_unseen_words = len(dataset_info.unseen_words)
+    # for word in random.sample(dataset_info.seen_words, k=k_seen_words) + random.sample(
+    #     dataset_info.unseen_words, k=k_unseen_words
+    # ):
+    #     samples.extend(dataset_info.sample_word(word, n=10))
+    for word in words:
+        samples.extend(dataset_info.sample_word(word, n=10))
+    embeddings: list[torch.Tensor] = []
+    labels: list[str] = []
+    for sample in samples:
+        dataset, word, filename = extract_dataset_word_filename(sample)
+        mfcc = extract_or_cache_mfcc(dataset, word, filename)
+        embedding = model(mfcc.unsqueeze(0)).squeeze(0)
+        embeddings.append(embedding)
+        if word in dataset_info.seen_words:
+            labels.append(f"{word}")
+        else:
+            labels.append(f"{word} (unseen)")
+    draw_embedding_map_from_lists(
+        embeddings,
+        labels,
+        show=False,
+        save_path=save_path,
+    )
 
 
 def draw_embedding_map_from_lists(
@@ -264,40 +336,6 @@ def get_keyword_embeddings(
             keyword_embedding = torch.stack(embeddings, dim=0).mean(dim=0)
             keyword_embeddings[keyword] = keyword_embedding
     return keyword_embeddings
-
-
-class DatasetInfo:
-    prepare_data: Callable[[], str]
-    dataset_name: str
-    seen_words: list[str]
-    unseen_words: list[str]
-
-    def __init__(
-        self,
-        prepare_data: Callable[[], str],
-        dataset_name: str,
-        words: list[str],
-        unseen_words: list[str],
-    ):
-        self.prepare_data = prepare_data
-        self.dataset_name = dataset_name
-        self.seen_words = words
-        self.unseen_words = unseen_words
-
-    def dataset_path(self) -> str:
-        return os.path.join(DATA_PATH, self.dataset_name)
-
-    def word_path(self, word: str) -> str:
-        return os.path.join(self.dataset_path(), word)
-
-    def sample_word(self, word: str, n: int) -> list[str]:
-        word_dir: str = self.word_path(word)
-        all_files: list[str] = [
-            os.path.join(DATA_PATH, self.dataset_name, word, f)
-            for f in os.listdir(word_dir)
-            if os.path.isfile(os.path.join(word_dir, f)) and f.endswith(".wav")
-        ]
-        return random.sample(all_files, n)
 
 
 def extract_word_speaker_index(file_path: str) -> tuple[str, str, str]:
