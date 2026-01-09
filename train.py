@@ -2,12 +2,11 @@ import argparse
 import torch
 import lightning as L
 from model import ConvStatsPoolEncoder, GRUEncoder
-from dataset import DataModule, cache_mfccs, draw_embedding_map, extract_or_cache_mfcc
+from dataset import DataModule, cache_mfccs
 from speech_commands import speech_commands_dataset_info
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 import os
-import wandb
 
 MODEL_PATH: str = "trained_models/"
 
@@ -163,14 +162,14 @@ if __name__ == "__main__":
         )
         dm.prepare_data()
         ckpt_dir: str = config["model"]
-        wandb.init(
+        # Let Lightning manage the W&B run; it ensures metrics/images logged via
+        # `self.logger` go to W&B.
+        wandb_logger = WandbLogger(
             project="ssp2025p",
-            #    entity=WANDB_NAME,
             name=ckpt_dir,
             config=config,
-            sync_tensorboard=True,
+            sync_tensorboard=False,
         )
-        wandb_logger = WandbLogger()
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(f"{MODEL_PATH}", ckpt_dir),
             save_top_k=1,
@@ -183,6 +182,7 @@ if __name__ == "__main__":
             devices=args.devices,
             min_epochs=1,
             max_epochs=args.epochs,
+            logger=wandb_logger,
             enable_checkpointing=True,
             callbacks=[checkpoint_callback],
             num_sanity_val_steps=0,
