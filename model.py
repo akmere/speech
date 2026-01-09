@@ -535,7 +535,7 @@ class GRUEncoder(L.LightningModule):
                 ax.plot(fprs, mdrs)
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET (epoch {epoch})")
+                ax.set_title(f"DET (epoch {epoch}) [AUC={auc_det:.4f}]")
                 ax.grid(True, alpha=0.3)
                 out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
                 fig.savefig(out_path, bbox_inches="tight")
