@@ -9,6 +9,8 @@ import torch
 from torch import optim, nn
 import torch.nn.functional as F
 import lightning as L
+import wandb
+from lightning.pytorch.loggers import WandbLogger
 from dataset import (
     DatasetInfo,
     extract_dataset_word_filename,
@@ -267,6 +269,41 @@ def det_points_for_thresholds(
     return thresholds, mdr, fpr
 
 
+def auc_from_det_points(
+    fprs: np.ndarray, mdrs: np.ndarray, *, add_endpoints: bool = True
+) -> tuple[float, float]:
+    """Return (auc_roc, auc_det) from arrays of fpr and mdr.
+
+    auc_roc: area under ROC (TPR vs FPR), higher is better.
+    auc_det: area under DET (MDR vs FPR), lower is better.
+    """
+    if fprs.size == 0 or mdrs.size == 0:
+        return 0.0, 0.0
+
+    f = np.asarray(fprs, dtype=np.float64)
+    m = np.asarray(mdrs, dtype=np.float64)
+
+    # Sort by FPR for integration
+    order = np.argsort(f)
+    f = f[order]
+    m = m[order]
+
+    # Clamp to valid ranges (rates)
+    f = np.clip(f, 0.0, 1.0)
+    m = np.clip(m, 0.0, 1.0)
+    tpr = 1.0 - m
+
+    if add_endpoints:
+        # Standard ROC endpoints
+        f = np.concatenate(([0.0], f, [1.0]))
+        tpr = np.concatenate(([0.0], tpr, [1.0]))
+        m = np.concatenate(([1.0], m, [0.0]))  # DET endpoints consistent with above
+
+    auc_roc = float(np.trapz(tpr, f))
+    auc_det = float(np.trapz(m, f))
+    return auc_roc, auc_det
+
+
 def batch_hard_triplet_loss(
     embeddings: torch.Tensor,
     labels: torch.Tensor,
@@ -486,6 +523,14 @@ class GRUEncoder(L.LightningModule):
                 self.dataset_info.seen_words + self.dataset_info.unseen_words,
             )
             if thresholds.size:
+                auc_roc, auc_det = auc_from_det_points(fprs, mdrs)
+                self.log_dict(
+                    {"auc_roc": auc_roc, "auc_det": auc_det},
+                    prog_bar=True,
+                    on_step=False,
+                    on_epoch=True,
+                )
+
                 fig, ax = plt.subplots(figsize=(5, 5))
                 ax.plot(fprs, mdrs)
                 ax.set_xlabel("False positive rate")
@@ -495,6 +540,12 @@ class GRUEncoder(L.LightningModule):
                 out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
                 fig.savefig(out_path, bbox_inches="tight")
                 plt.close(fig)
+
+                if isinstance(self.logger, WandbLogger):
+                    self.logger.log_image(
+                        "det_curves",
+                        [wandb.Image(out_path, caption=f"DET curve epoch {epoch}")],
+                    )
 
     def configure_optimizers(
         self,
@@ -657,6 +708,14 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 self.dataset_info.seen_words + self.dataset_info.unseen_words,
             )
             if thresholds.size:
+                auc_roc, auc_det = auc_from_det_points(fprs, mdrs)
+                self.log_dict(
+                    {"auc_roc": auc_roc, "auc_det": auc_det},
+                    prog_bar=True,
+                    on_step=False,
+                    on_epoch=True,
+                )
+
                 fig, ax = plt.subplots(figsize=(5, 5))
                 ax.plot(fprs, mdrs)
                 ax.set_xlabel("False positive rate")
@@ -666,6 +725,12 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
                 fig.savefig(out_path, bbox_inches="tight")
                 plt.close(fig)
+
+                if isinstance(self.logger, WandbLogger):
+                    self.logger.log_image(
+                        "det_curves",
+                        [wandb.Image(out_path, caption=f"DET curve epoch {epoch}")],
+                    )
 
     def configure_optimizers(
         self,
