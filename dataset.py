@@ -66,6 +66,11 @@ def draw_embeddings(
     model: L.LightningModule,
     words: list[str],
 ):
+    model.eval()
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
     samples: list[str] = []
     # k_seen_words: int = 5
     # if len(dataset_info.seen_words) < k_seen_words:
@@ -81,15 +86,16 @@ def draw_embeddings(
         samples.extend(dataset_info.sample_word(word, n=10))
     embeddings: list[torch.Tensor] = []
     labels: list[str] = []
-    for sample in samples:
-        dataset, word, filename = extract_dataset_word_filename(sample)
-        mfcc = extract_or_cache_mfcc(dataset, word, filename)
-        embedding = model(mfcc.unsqueeze(0)).squeeze(0)
-        embeddings.append(embedding)
-        if word in dataset_info.seen_words:
-            labels.append(f"{word}")
-        else:
-            labels.append(f"{word} (unseen)")
+    with torch.no_grad():
+        for sample in samples:
+            dataset, word, filename = extract_dataset_word_filename(sample)
+            mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
+            embedding = model(mfcc.unsqueeze(0)).squeeze(0)
+            embeddings.append(embedding)
+            if word in dataset_info.seen_words:
+                labels.append(f"{word}")
+            else:
+                labels.append(f"{word} (unseen)")
     draw_embedding_map_from_lists(
         embeddings,
         labels,
