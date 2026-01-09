@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Iterable, Mapping
+from typing import Mapping
 
 import numpy as np
 import torch
 from torch import optim, nn
 import torch.nn.functional as F
 import lightning as L
-from sklearn.metrics import det_curve
-
 from dataset import (
     DatasetInfo,
     extract_dataset_word_filename,
@@ -25,210 +23,6 @@ try:
     from scipy.stats import norm as _norm
 except Exception:
     _norm = None
-
-
-def _collect_eval_embeddings(
-    model: "ConvStatsPoolEncoder | GRUEncoder",
-    dataset_info: DatasetInfo,
-    words: list[str],
-    *,
-    n_per_word: int = 100,
-) -> tuple[torch.Tensor, list[str]]:
-    """Sample audio and compute embeddings once (to avoid recomputing per threshold).
-
-    Returns:
-        embeddings: (N, D) on CPU
-        labels: list[str] length N, true word for each embedding
-    """
-    try:
-        model_device = next(model.parameters()).device
-    except StopIteration:
-        model_device = torch.device("cpu")
-
-    model.eval()
-    embs: list[torch.Tensor] = []
-    labels: list[str] = []
-
-    with torch.no_grad():
-        for w in words:
-            samples = dataset_info.sample_word(w, n=n_per_word)
-            for sample in samples:
-                dataset, word, filename = extract_dataset_word_filename(sample)
-                mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
-                emb = model(mfcc.unsqueeze(0)).squeeze(0)
-                if emb.ndim != 1:
-                    emb = emb.reshape(-1)
-                embs.append(emb.detach().cpu())
-                labels.append(w)
-
-    if not embs:
-        # Use a dummy empty tensor with unknown D.
-        return torch.empty((0, 0), dtype=torch.float32), []
-
-    return torch.stack(embs, dim=0), labels
-
-
-def _pairwise_dist2(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Squared L2 distances between rows of a and rows of b.
-
-    a: (N, D), b: (K, D) => (N, K)
-    """
-    if a.ndim != 2 or b.ndim != 2 or a.shape[1] != b.shape[1]:
-        raise ValueError(f"bad shapes: a={tuple(a.shape)} b={tuple(b.shape)}")
-    a2 = (a * a).sum(dim=1, keepdim=True)  # (N,1)
-    b2 = (b * b).sum(dim=1).unsqueeze(0)  # (1,K)
-    dist2 = (a2 + b2 - 2.0 * (a @ b.T)).clamp_min(0.0)
-    return dist2
-
-
-def calculate_avg_det_curves_sklearn(
-    model: "ConvStatsPoolEncoder | GRUEncoder",
-    keyword_embedding_index: "KeywordEmbeddingIndex",
-    dataset_info: DatasetInfo,
-    *,
-    n_per_word: int = 100,
-    fpr_grid: np.ndarray | None = None,
-) -> tuple[list[float], list[float], list[float]]:
-    """Compute DET curves using sklearn.metrics.det_curve and average per-word.
-
-    Returns:
-        (fprs, seen_avg_mdrs, unseen_avg_mdrs)
-
-    Notes:
-      - Seen curve: average DET over seen keywords (one-vs-rest), score = -dist2_to_keyword.
-      - Unseen curve: average DET over unseen words as "non-keyword detection",
-        positives=unseen word samples, negatives=seen keyword samples,
-        score = min_dist2_to_any_keyword (higher => more non-keyword).
-    """
-    if fpr_grid is None:
-        fpr_grid = np.linspace(0.0, 1.0, 200, dtype=np.float64)
-
-    eval_words = dataset_info.seen_words + dataset_info.unseen_words
-    embs, labels = _collect_eval_embeddings(
-        model, dataset_info, eval_words, n_per_word=n_per_word
-    )
-    if embs.numel() == 0:
-        zeros = [0.0] * int(fpr_grid.shape[0])
-        return fpr_grid.tolist(), zeros, zeros
-
-    # Work on CPU for sklearn/numpy interoperability.
-    kw = keyword_embedding_index.embeddings.detach().cpu()
-    dist2 = _pairwise_dist2(embs, kw).numpy()  # (N,K)
-    labels_np = np.asarray(labels, dtype=object)
-
-    kw_to_idx = {k: i for i, k in enumerate(keyword_embedding_index.keywords)}
-
-    # ---- Seen keywords: per-keyword DET, averaged ----
-    seen_words = [w for w in dataset_info.seen_words if w in kw_to_idx]
-    seen_fnr_sum = np.zeros_like(fpr_grid, dtype=np.float64)
-    seen_count = 0
-
-    for w in seen_words:
-        y_true = (labels_np == w).astype(np.int32)
-        if y_true.sum() == 0 or y_true.sum() == y_true.shape[0]:
-            continue  # det_curve needs both classes present
-
-        score = -dist2[:, kw_to_idx[w]]  # higher => more likely w
-        fpr, fnr, _thr = det_curve(y_true, score)
-
-        # Interpolate fnr over a shared fpr grid for averaging
-        fnr_i = np.interp(fpr_grid, fpr, fnr, left=fnr[0], right=fnr[-1])
-        seen_fnr_sum += fnr_i
-        seen_count += 1
-
-    seen_avg_mdr = (seen_fnr_sum / max(seen_count, 1)).tolist()
-
-    # ---- Unseen words: per-unseen DET, averaged ----
-    # Positives = a given unseen word; Negatives = all seen keyword samples.
-    seen_mask = np.isin(labels_np, np.asarray(dataset_info.seen_words, dtype=object))
-    min_dist2 = dist2.min(axis=1)  # (N,)
-
-    unseen_fnr_sum = np.zeros_like(fpr_grid, dtype=np.float64)
-    unseen_count = 0
-
-    for u in dataset_info.unseen_words:
-        pos_mask = labels_np == u
-        if pos_mask.sum() == 0:
-            continue
-
-        # Restrict to (positives=u) U (negatives=seen)
-        use_mask = pos_mask | seen_mask
-        y_true = pos_mask[use_mask].astype(np.int32)
-        if y_true.sum() == 0 or y_true.sum() == y_true.shape[0]:
-            continue
-
-        score = min_dist2[use_mask]  # higher => more likely "non-keyword"/unseen
-        fpr, fnr, _thr = det_curve(y_true, score)
-
-        fnr_i = np.interp(fpr_grid, fpr, fnr, left=fnr[0], right=fnr[-1])
-        unseen_fnr_sum += fnr_i
-        unseen_count += 1
-
-    unseen_avg_mdr = (unseen_fnr_sum / max(unseen_count, 1)).tolist()
-
-    return fpr_grid.tolist(), seen_avg_mdr, unseen_avg_mdr
-
-
-def calculate_det_curve(
-    model: "ConvStatsPoolEncoder | GRUEncoder",
-    keyword_embedding_index: KeywordEmbeddingIndex,
-    dataset_info: DatasetInfo,
-    words: list[str],
-    thresholds: Iterable[float],
-) -> tuple[list[float], list[float], list[float]]:
-    """Returns (thresholds, mdrs, fprs)."""
-    model.eval()
-    thr_list: list[float] = []
-    mdrs: list[float] = []
-    fprs: list[float] = []
-    with torch.no_grad():
-        for t in thresholds:
-            mdr, fpr = calculate_missed_detection_and_false_positive_rates(
-                model,
-                keyword_embedding_index,
-                dataset_info,
-                words,
-                threshold=float(t),
-            )
-            thr_list.append(float(t))
-            mdrs.append(float(mdr))
-            fprs.append(float(fpr))
-    return thr_list, mdrs, fprs
-
-
-def plot_det_curve(
-    fprs: list[float],
-    mdrs: list[float],
-    *,
-    title: str = "DET curve",
-    use_probit_axes: bool = True,
-):
-    """Returns a matplotlib Figure."""
-    fig, ax = plt.subplots(figsize=(5.5, 4.5), dpi=140)
-
-    # Clamp away from 0/1 to avoid infinities on probit scale
-    eps = 1e-6
-    fx = [min(max(x, eps), 1.0 - eps) for x in fprs]
-    my = [min(max(y, eps), 1.0 - eps) for y in mdrs]
-
-    if use_probit_axes and _norm is not None:
-        x = _norm.ppf(fx)
-        y = _norm.ppf(my)
-        ax.plot(x, y, linewidth=2)
-        ax.set_xlabel("False positive rate (probit)")
-        ax.set_ylabel("Missed detection rate (probit)")
-        ax.set_title(title + " (probit)")
-    else:
-        ax.plot(fx, my, linewidth=2)
-        ax.set_xlabel("False positive rate")
-        ax.set_ylabel("Missed detection rate")
-        ax.set_title(title)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-
-    ax.grid(True, linestyle="--", alpha=0.5)
-    fig.tight_layout()
-    return fig
 
 
 # Independently of how the system is configured, the prediction is
@@ -384,6 +178,93 @@ def calculate_missed_detection_and_false_positive_rates(
         missed_seen_predictions / seen_words_samples if seen_words_samples > 0 else 0.0,
         false_positives / unseen_words_samples if unseen_words_samples > 0 else 0.0,
     )
+
+
+@torch.no_grad()
+def det_points_for_thresholds(
+    model: "ConvStatsPoolEncoder | GRUEncoder",
+    keyword_embedding_index: KeywordEmbeddingIndex,
+    dataset_info: DatasetInfo,
+    words: list[str],
+    *,
+    n_per_word: int = 100,
+    n_thresholds: int = 200,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute (thresholds, mdr, fpr) for a sweep of thresholds.
+
+    MDR is computed over seen-word samples, FPR over unseen-word samples.
+    Threshold is in the same units as the L2 distance used by `classify_embedding`.
+    """
+
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+
+    kw = keyword_embedding_index.embeddings.to(model_device)
+    keywords = keyword_embedding_index.keywords
+    word_to_idx = {w: i for i, w in enumerate(keywords)}
+
+    dists: list[float] = []
+    is_seen: list[bool] = []
+    nearest_correct: list[bool] = []
+
+    for word in words:
+        samples = dataset_info.sample_word(word, n=n_per_word)
+        for sample in samples:
+            dataset, word, filename = extract_dataset_word_filename(sample)
+            mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
+            emb = model(mfcc.unsqueeze(0)).squeeze(0)
+
+            diff = kw - emb.unsqueeze(0)
+            dist2 = (diff * diff).sum(dim=1)
+            best_idx = int(dist2.argmin().item())
+            best_dist = float(torch.sqrt(dist2[best_idx]).item())
+
+            dists.append(best_dist)
+            if word in dataset_info.seen_words:
+                is_seen.append(True)
+                nearest_correct.append(word_to_idx.get(word, -1) == best_idx)
+            else:
+                is_seen.append(False)
+                nearest_correct.append(False)
+
+    if not dists:
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+
+    dists_np = np.asarray(dists, dtype=np.float64)
+    is_seen_np = np.asarray(is_seen, dtype=bool)
+    nearest_correct_np = np.asarray(nearest_correct, dtype=bool)
+
+    # Thresholds in distance-space.
+    lo = float(dists_np.min())
+    hi = float(dists_np.max())
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+    if hi <= lo:
+        hi = lo + 1e-6
+    thresholds = np.linspace(lo, hi, int(n_thresholds), dtype=np.float64)
+
+    seen_d = dists_np[is_seen_np]
+    seen_correct = nearest_correct_np[is_seen_np]
+    unseen_d = dists_np[~is_seen_np]
+
+    if seen_d.size:
+        # Miss if nearest keyword is wrong OR distance >= threshold.
+        missed = (~seen_correct)[None, :] | (seen_d[None, :] >= thresholds[:, None])
+        mdr = missed.mean(axis=1)
+    else:
+        mdr = np.zeros_like(thresholds)
+
+    if unseen_d.size:
+        # False positive if an unseen word is within threshold of any keyword.
+        fpr = (unseen_d[None, :] < thresholds[:, None]).mean(axis=1)
+    else:
+        fpr = np.zeros_like(thresholds)
+
+    return thresholds, mdr, fpr
 
 
 def batch_hard_triplet_loss(
@@ -598,31 +479,22 @@ class GRUEncoder(L.LightningModule):
         if self.det_curves:
             os.makedirs("plots", exist_ok=True)
 
-            fprs, seen_mdrs, unseen_mdrs = calculate_avg_det_curves_sklearn(
+            thresholds, mdrs, fprs = det_points_for_thresholds(
                 self,
                 keyword_embedding_index,
                 self.dataset_info,
-                n_per_word=100,
-                fpr_grid=np.linspace(0.0, 1.0, 200, dtype=np.float64),
+                self.dataset_info.seen_words + self.dataset_info.unseen_words,
             )
-
-            fig_seen = plot_det_curve(
-                fprs,
-                seen_mdrs,
-                title=f"DET seen keywords (avg per word, sklearn) (epoch {epoch})",
-                use_probit_axes=False,
-            )
-            fig_seen.savefig(f"plots/det_curve_seen_epoch_{epoch}.png")
-            plt.close(fig_seen)
-
-            fig_unseen = plot_det_curve(
-                fprs,
-                unseen_mdrs,
-                title=f"DET unseen words (avg per word, sklearn) (epoch {epoch})",
-                use_probit_axes=False,
-            )
-            fig_unseen.savefig(f"plots/det_curve_unseen_epoch_{epoch}.png")
-            plt.close(fig_unseen)
+            if thresholds.size:
+                fig, ax = plt.subplots(figsize=(5, 5))
+                ax.plot(fprs, mdrs)
+                ax.set_xlabel("False positive rate")
+                ax.set_ylabel("Missed detection rate")
+                ax.set_title(f"DET (epoch {epoch})")
+                ax.grid(True, alpha=0.3)
+                out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
+                fig.savefig(out_path, bbox_inches="tight")
+                plt.close(fig)
 
     def configure_optimizers(
         self,
@@ -778,31 +650,22 @@ class ConvStatsPoolEncoder(L.LightningModule):
         if self.det_curves:
             os.makedirs("plots", exist_ok=True)
 
-            fprs, seen_mdrs, unseen_mdrs = calculate_avg_det_curves_sklearn(
+            thresholds, mdrs, fprs = det_points_for_thresholds(
                 self,
                 keyword_embedding_index,
                 self.dataset_info,
-                n_per_word=100,
-                fpr_grid=np.linspace(0.0, 1.0, 200, dtype=np.float64),
+                self.dataset_info.seen_words + self.dataset_info.unseen_words,
             )
-
-            fig_seen = plot_det_curve(
-                fprs,
-                seen_mdrs,
-                title=f"DET seen keywords (avg per word, sklearn) (epoch {epoch})",
-                use_probit_axes=False,
-            )
-            fig_seen.savefig(f"plots/det_curve_seen_epoch_{epoch}.png")
-            plt.close(fig_seen)
-
-            fig_unseen = plot_det_curve(
-                fprs,
-                unseen_mdrs,
-                title=f"DET unseen words (avg per word, sklearn) (epoch {epoch})",
-                use_probit_axes=False,
-            )
-            fig_unseen.savefig(f"plots/det_curve_unseen_epoch_{epoch}.png")
-            plt.close(fig_unseen)
+            if thresholds.size:
+                fig, ax = plt.subplots(figsize=(5, 5))
+                ax.plot(fprs, mdrs)
+                ax.set_xlabel("False positive rate")
+                ax.set_ylabel("Missed detection rate")
+                ax.set_title(f"DET (epoch {epoch})")
+                ax.grid(True, alpha=0.3)
+                out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
+                fig.savefig(out_path, bbox_inches="tight")
+                plt.close(fig)
 
     def configure_optimizers(
         self,
