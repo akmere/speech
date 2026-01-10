@@ -6,6 +6,8 @@ import zipfile
 from dataset import DatasetInfo, SplitName
 import os
 
+from util import extract_noise_clips
+
 SPEECH_COMMANDS_V2_URL: str = (
     "https://www.kaggle.com/api/v1/datasets/download/yashdogra/speech-commands"
 )
@@ -18,16 +20,6 @@ SEEN_WORDS: List[str] = [
     "up",
     "down",
     "left",
-    "right",
-    "on",
-    "off",
-    "stop",
-    "go",
-    "zero",
-    "one",
-    "two",
-    "three",
-    "four",
     "five",
     "six",
     "seven",
@@ -39,8 +31,9 @@ SEEN_WORDS: List[str] = [
     "dog",
     "happy",
     "house",
-    "marvin",
     "sheila",
+    "background_noise",
+    "stop",
 ]
 
 UNSEEN_WORDS: List[str] = [
@@ -51,6 +44,16 @@ UNSEEN_WORDS: List[str] = [
     "follow",
     "learn",
     "visual",
+    "right",
+    "on",
+    "off",
+    "go",
+    "zero",
+    "one",
+    "marvin",
+    "two",
+    "three",
+    "four",
 ]
 
 MAX_NUM_WAVS_PER_CLASS = 2**27 - 1  # ~134M
@@ -118,6 +121,15 @@ def prepare_speech_commands():
         print(f"Removing {ZIP_DATA_PATH}")
         os.remove(ZIP_DATA_PATH)
         print(f"Removed {ZIP_DATA_PATH}")
+        # extract one seconds clips from the files localted in EXTRACTED_DATA_PATH/_background_noise_/,
+        # save them in EXTRACTED_DATA_PATH/background_noise
+        import wave
+        import contextlib
+        import numpy as np
+
+        background_noise_dir = os.path.join(EXTRACTED_DATA_PATH, "_background_noise_")
+        output_dir = os.path.join(EXTRACTED_DATA_PATH, "background_noise")
+        extract_noise_clips(background_noise_dir, output_dir, n_clips=50)
     else:
         print(f"{EXTRACTED_DATA_PATH} exists, no download needed")
     return EXTRACTED_DATA_PATH

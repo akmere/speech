@@ -17,10 +17,10 @@ from arabic import arabic_dataset_info
 import random
 
 if __name__ == "__main__":
-    # arabic_dataset_info.prepare_data()
-    arabic_dataset_info.test_split()
-    # speech_commands_dataset_info.prepare_data()
-    speech_commands_dataset_info.test_split()
+    arabic_dataset_info.prepare_data()
+    # arabic_dataset_info.test_split()
+    speech_commands_dataset_info.prepare_data()
+    # speech_commands_dataset_info.test_split()
     # with torch.no_grad():
     #     ckpt_path = "model.ckpt"
     #     ckpt = torch.load(ckpt_path, map_location="cpu")

@@ -7,6 +7,8 @@ import zipfile
 from dataset import DatasetInfo, SplitName
 import os
 
+from util import extract_noise_clips
+
 ARABIC_COMMANDS: str = "https://www.kaggle.com/api/v1/datasets/download/abdulkaderghandoura/arabic-speech-commands-dataset"
 ZIP_DATA_PATH: str = "tmp/arabic.zip"
 EXTRACTED_DATA_PATH: str = "tmp/arabic"
@@ -15,12 +17,6 @@ SEEN_WORDS: List[str] = [
     # zero,one,two,three,four,five,six,seven,eight,nine,right,left,up,down,forward,backward,yes,no,start,stop,enable,disable,ok,cancel,open,close,zoom in,zoom out,previous,next,send,receive,move,rotate,record,enter,digit,direction,options,undo
     "zero",
     "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
     "eight",
     "nine",
     "right",
@@ -28,32 +24,39 @@ SEEN_WORDS: List[str] = [
     "up",
     "down",
     "yes",
-    "no",
-    "start",
-    "stop",
-    "enable",
     "disable",
+    "move",
+    "rotate",
     "ok",
-    "cancel",
     "open",
     "close",
     "zoom in",
     "zoom out",
     "previous",
     "next",
+    "background",
 ]
 
 UNSEEN_WORDS: List[str] = [
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "cancel",
+    "seven",
     "send",
     "receive",
-    "move",
-    "rotate",
     "record",
     "enter",
     "digit",
     "direction",
     "options",
     "undo",
+    "no",
+    "start",
+    "stop",
+    "enable",
 ]
 
 
@@ -108,6 +111,11 @@ def prepare_arabic():
                     writer = csv.DictWriter(f, fieldnames=fieldnames)
                     writer.writeheader()
                     writer.writerows(rows)
+        background_noise_dir = os.path.join(
+            EXTRACTED_DATA_PATH, "background_noise", "background_noise"
+        )
+        output_dir = os.path.join(EXTRACTED_DATA_PATH, "background")
+        extract_noise_clips(background_noise_dir, output_dir, n_clips=50)
     else:
         print(f"{EXTRACTED_DATA_PATH} exists, no download needed")
     return EXTRACTED_DATA_PATH

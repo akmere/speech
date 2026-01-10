@@ -144,30 +144,30 @@ if __name__ == "__main__":
         if config["dataset"] == "arabic":
             dataset_info = arabic_dataset_info
             embeddings_words = [
-                "nine",
-                "right",
-                "left",
-                "up",
+                "down",
+                "yes",
                 "disable",
                 "move",
                 "rotate",
+                "seven",
+                "send",
+                "receive",
                 "record",
                 "enter",
-                "digit",
             ]
         elif config["dataset"] == "speech_commands":
             dataset_info = speech_commands_dataset_info
             embeddings_words = [
-                "yes",
+                "sheila",
+                "seven",
+                "eight",
                 "no",
                 "down",
-                "three",
-                "marvin",
-                "tree",
-                "backward",
-                "forward",
                 "follow",
+                "learn",
                 "visual",
+                "right",
+                "on",
             ]
 
         else:
