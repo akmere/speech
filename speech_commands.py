@@ -33,7 +33,7 @@ SEEN_WORDS: List[str] = [
     "house",
     "sheila",
     "stop",
-    "background_noise",
+    # "background_noise",
     "off",
     "go",
     "zero",

@@ -34,7 +34,7 @@ SEEN_WORDS: List[str] = [
     "zoom out",
     "previous",
     "next",
-    "background",
+    # "background",
     "two",
     "three",
     "four",
