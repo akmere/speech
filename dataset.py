@@ -528,14 +528,14 @@ class DataDataset(Dataset):
         words: List[str],
         n_mfcc: int,
         sr: int,
-        fixed_T: int = 32,
+        fixed_T: int,
     ):
         self.n_mfcc = n_mfcc
         self.sr = sr
         self.label_to_idx: dict[str, int] = {w: i for i, w in enumerate(words)}
         self.items: List[tuple[str, str]] = []
         self.dataset_path = dataset_path
-        self.fixed_T = int(fixed_T)
+        self.fixed_T = fixed_T
         count: int = 0
         for word in words:
             for item_name in os.listdir(f"{dataset_path}/{word}"):
@@ -623,6 +623,7 @@ class DataModule(L.LightningDataModule):
         k: int,
         steps_per_epoch: int,
         val_steps_per_epoch: int,
+        fixed_length: int,
         dataset_info: DatasetInfo,
     ) -> None:
         super().__init__()
@@ -633,6 +634,7 @@ class DataModule(L.LightningDataModule):
         self.k = k
         self.steps_per_epoch = steps_per_epoch
         self.val_steps_per_epoch = val_steps_per_epoch
+        self.fixed_length = fixed_length
         self.dataset_info = dataset_info
         self.dataset_path: str = f"{DATA_PATH}/{self.dataset_info.dataset_name}"
 
@@ -652,6 +654,7 @@ class DataModule(L.LightningDataModule):
             self.dataset_info.seen_words + self.dataset_info.unseen_words,
             n_mfcc=self.n_mfcc,
             sr=self.sr,
+            fixed_T=self.fixed_length,
         )
         same_length, min_len, max_len = self.whole_ds.check_same_length()
         print(
@@ -662,6 +665,7 @@ class DataModule(L.LightningDataModule):
             self.dataset_info.seen_words,
             n_mfcc=self.n_mfcc,
             sr=self.sr,
+            fixed_T=self.fixed_length,
         )
         self.train_ds, self.val_ds, self.test_ds = random_split(
             self.seen_ds, [0.8, 0.1, 0.1]

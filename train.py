@@ -104,6 +104,12 @@ if __name__ == "__main__":
         default=None,
         help="disable logging",
     )
+    parser.add_argument(
+        "--fix-length",
+        type=int,
+        default=32,
+        help="fix length of input sequences",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -124,6 +130,7 @@ if __name__ == "__main__":
             "l2": args.l2 is not None,
             "det_curves": args.det_curves is not None,
             "threshold": args.threshold,
+            "fix_length": args.fix_length,
             "model": args.model,
         }
         if config["model"] == "conv":
@@ -165,6 +172,7 @@ if __name__ == "__main__":
             p=config["p"],
             steps_per_epoch=config["steps_per_epoch"],
             val_steps_per_epoch=config["val_steps_per_epoch"],
+            fixed_length=config["fix_length"],
         )
         dm.prepare_data()
         ckpt_dir: str = config["model"]
