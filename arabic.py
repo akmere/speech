@@ -33,9 +33,15 @@ SEEN_WORDS: List[str] = [
     "zoom in",
     "zoom out",
     "previous",
-    "next",
-    # "background",
     "two",
+]
+
+UNSEEN_WORDS: List[str] = [
+    "undo",
+    "no",
+    "start",
+    "stop",
+    "enable",
     "three",
     "four",
     "five",
@@ -49,14 +55,7 @@ SEEN_WORDS: List[str] = [
     "digit",
     "direction",
     "options",
-]
-
-UNSEEN_WORDS: List[str] = [
-    "undo",
-    "no",
-    "start",
-    "stop",
-    "enable",
+    "next",
 ]
 
 
