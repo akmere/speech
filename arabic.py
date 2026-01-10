@@ -35,9 +35,6 @@ SEEN_WORDS: List[str] = [
     "previous",
     "next",
     "background",
-]
-
-UNSEEN_WORDS: List[str] = [
     "two",
     "three",
     "four",
@@ -52,6 +49,9 @@ UNSEEN_WORDS: List[str] = [
     "digit",
     "direction",
     "options",
+]
+
+UNSEEN_WORDS: List[str] = [
     "undo",
     "no",
     "start",

@@ -149,11 +149,11 @@ if __name__ == "__main__":
                 "disable",
                 "move",
                 "rotate",
-                "seven",
-                "send",
-                "receive",
-                "record",
-                "enter",
+                "undo",
+                "no",
+                "start",
+                "stop",
+                "enable",
             ]
         elif config["dataset"] == "speech_commands":
             dataset_info = speech_commands_dataset_info

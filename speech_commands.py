@@ -34,26 +34,26 @@ SEEN_WORDS: List[str] = [
     "sheila",
     "stop",
     "background_noise",
-]
-
-UNSEEN_WORDS: List[str] = [
-    "tree",
-    "wow",
-    "backward",
-    "forward",
-    "follow",
-    "learn",
-    "visual",
-    "right",
-    "on",
     "off",
     "go",
     "zero",
+    "wow",
     "one",
     "marvin",
     "two",
     "three",
     "four",
+    "tree",
+    "backward",
+    "forward",
+]
+
+UNSEEN_WORDS: List[str] = [
+    "follow",
+    "learn",
+    "visual",
+    "right",
+    "on",
 ]
 
 MAX_NUM_WAVS_PER_CLASS = 2**27 - 1  # ~134M
