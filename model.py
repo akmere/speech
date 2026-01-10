@@ -873,64 +873,125 @@ class ConvStatsPoolEncoder(L.LightningModule):
             self.print(
                 f"epoch={epoch} validation_loss={validation_loss.detach().cpu().item():.6f}"
             )
-        seen_keyword_embeddings = get_keyword_embeddings(
-            self, self.dataset_info.seen_words, self.dataset_info
-        )
-        unseen_keyword_embeddings = get_keyword_embeddings(
-            self, self.dataset_info.unseen_words, self.dataset_info
-        )
-        seen_keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
-            seen_keyword_embeddings, device=self.device
-        )
-        unseen_keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
-            unseen_keyword_embeddings, device=self.device
-        )
-        mdr, fpr = calculate_missed_detection_and_false_positive_rates(
-            self,
-            seen_keyword_embedding_index,
-            self.dataset_info,
-            self.dataset_info.seen_words + self.dataset_info.unseen_words,
-            self.threshold,
-        )
-        self.log_dict(
-            {
-                "missed_detection_rate": mdr,
-                "false_positive_rate": fpr,
-            }
-        )
+
+        # Then,
+        # we compute a DET curve for each word in the sets and average
+        # them to obtain one DET curve for the seen keywords and
+        # one for the unseen ones
+
+        # keyword_embeddings = get_keyword_embeddings(
+        #     self, self.dataset_info.seen_words, self.dataset_info
+        # )
+        # keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
+        #     keyword_embeddings, device=self.device
+        # )
+        # mdr, fpr = calculate_missed_detection_and_false_positive_rates(
+        #     self,
+        #     keyword_embedding_index,
+        #     self.dataset_info,
+        #     self.dataset_info.seen_words + self.dataset_info.unseen_words,
+        #     self.threshold,
+        # )
+
+        # self.log_dict(
+        #     {
+        #         "missed_detection_rate": mdr,
+        #         "false_positive_rate": fpr,
+        #     }
+        # )
         if self.det_curves:
             os.makedirs("plots", exist_ok=True)
 
-            thresholds, mdrs, fprs = det_points_for_thresholds(
-                self,
-                seen_keyword_embedding_index,
-                self.dataset_info,
-                self.dataset_info.seen_words + self.dataset_info.unseen_words,
+            seen_kw = get_keyword_embeddings(
+                self, self.dataset_info.seen_words, self.dataset_info
             )
-            if thresholds.size:
-                auc_roc, auc_det = auc_from_det_points(fprs, mdrs)
+            unseen_kw = get_keyword_embeddings(
+                self, self.dataset_info.unseen_words, self.dataset_info
+            )
+            seen_index = KeywordEmbeddingIndex.from_mapping(seen_kw, device=self.device)
+            unseen_index = KeywordEmbeddingIndex.from_mapping(
+                unseen_kw, device=self.device
+            )
+
+            # Initialize AUC values so they are always bound (helps static type checkers).
+            auc_roc_s = float("nan")
+            auc_det_s = float("nan")
+            auc_roc_u = float("nan")
+            auc_det_u = float("nan")
+
+            # Seen: targets=seen, non-targets=unseen
+            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split(
+                self,
+                seen_index,
+                self.dataset_info,
+                target_words=self.dataset_info.seen_words,
+                non_target_words=self.dataset_info.unseen_words,
+            )
+            if thr_s.size:
+                auc_roc_s, auc_det_s = auc_from_det_points(fpr_s, mdr_s)
                 self.log_dict(
-                    {"auc_roc": auc_roc, "auc_det": auc_det},
+                    {"auc_roc_seen": auc_roc_s, "auc_det_seen": auc_det_s},
                     prog_bar=True,
                     on_step=False,
                     on_epoch=True,
                 )
 
-                fig, ax = plt.subplots(figsize=(5, 5))
-                ax.plot(fprs, mdrs)
+            # Unseen: targets=unseen, non-targets=seen
+            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split(
+                self,
+                unseen_index,
+                self.dataset_info,
+                target_words=self.dataset_info.unseen_words,
+                non_target_words=self.dataset_info.seen_words,
+            )
+            if thr_u.size:
+                auc_roc_u, auc_det_u = auc_from_det_points(fpr_u, mdr_u)
+                self.log_dict(
+                    {"auc_roc_unseen": auc_roc_u, "auc_det_unseen": auc_det_u},
+                    prog_bar=True,
+                    on_step=False,
+                    on_epoch=True,
+                )
+
+            # One plot: overlay both curves + legend
+            if thr_s.size or thr_u.size:
+                fig, ax = plt.subplots(figsize=(6, 6))
+
+                if thr_s.size:
+                    ax.plot(
+                        fpr_s,
+                        mdr_s,
+                        label=f"Seen targets (AUC_det={auc_det_s:.4f})",
+                    )
+                if thr_u.size:
+                    ax.plot(
+                        fpr_u,
+                        mdr_u,
+                        label=f"Unseen targets (AUC_det={auc_det_u:.4f})",
+                    )
+
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET (epoch {epoch}) [AUC={auc_det:.4f}]")
+                ax.set_title(f"DET curves (epoch {epoch})")
                 ax.grid(True, alpha=0.3)
-                out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
+                ax.legend(loc="best")
+
+                out_path = os.path.join(
+                    "plots", f"det_seen_vs_unseen_epoch_{epoch}.png"
+                )
                 fig.savefig(out_path, bbox_inches="tight")
                 plt.close(fig)
 
                 if isinstance(self.logger, WandbLogger):
                     self.logger.log_image(
-                        "det_curves",
-                        [wandb.Image(out_path, caption=f"DET curve epoch {epoch}")],
+                        "det_curves_seen_vs_unseen",
+                        [
+                            wandb.Image(
+                                out_path, caption=f"DET seen vs unseen epoch {epoch}"
+                            )
+                        ],
                     )
+
             embeddings_path = os.path.join("plots", f"embeddings_epoch_{epoch}.png")
             draw_embeddings(
                 save_path=embeddings_path,
