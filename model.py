@@ -660,9 +660,10 @@ class GRUEncoder(L.LightningModule):
             self.print(
                 f"epoch={epoch} validation_loss={validation_loss.detach().cpu().item():.6f}"
             )
-
-    def on_test_end(self):
-        _log_det_curves_and_embeddings(self)
+        # after the last epoch execute _log_det_curves_and_embeddings
+        if self.trainer.max_epochs is not None:
+            if epoch == self.trainer.max_epochs - 1:
+                _log_det_curves_and_embeddings(self)
 
     def configure_optimizers(
         self,
