@@ -33,14 +33,7 @@ SEEN_WORDS: List[str] = [
     "tree",
     "backward",
     "forward",
-]
-
-UNSEEN_WORDS: List[str] = [
-    "follow",
-    "learn",
-    "visual",
-    "right",
-    "on",
+    # half
     "happy",
     "house",
     "sheila",
@@ -50,6 +43,15 @@ UNSEEN_WORDS: List[str] = [
     "zero",
     "wow",
     "one",
+]
+
+UNSEEN_WORDS: List[str] = [
+    "follow",
+    "learn",
+    "visual",
+    "right",
+    "on",
+    # drawn embeddings
     "marvin",
     "two",
     "three",
