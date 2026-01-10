@@ -129,7 +129,7 @@ def prepare_speech_commands():
 
         background_noise_dir = os.path.join(EXTRACTED_DATA_PATH, "_background_noise_")
         output_dir = os.path.join(EXTRACTED_DATA_PATH, "background_noise")
-        extract_noise_clips(background_noise_dir, output_dir, n_clips=50)
+        extract_noise_clips(background_noise_dir, output_dir, n_clips=125)
     else:
         print(f"{EXTRACTED_DATA_PATH} exists, no download needed")
     return EXTRACTED_DATA_PATH

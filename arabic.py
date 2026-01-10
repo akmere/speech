@@ -115,7 +115,7 @@ def prepare_arabic():
             EXTRACTED_DATA_PATH, "background_noise", "background_noise"
         )
         output_dir = os.path.join(EXTRACTED_DATA_PATH, "background")
-        extract_noise_clips(background_noise_dir, output_dir, n_clips=50)
+        extract_noise_clips(background_noise_dir, output_dir, n_clips=125)
     else:
         print(f"{EXTRACTED_DATA_PATH} exists, no download needed")
     return EXTRACTED_DATA_PATH

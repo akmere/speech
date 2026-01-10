@@ -52,6 +52,7 @@ class DatasetInfo:
             for f in os.listdir(word_dir)
             if os.path.isfile(os.path.join(word_dir, f)) and f.endswith(".wav")
         ]
+        print(f"Sampling {n} examples for word '{word}', found {len(all_files)} files.")
         return random.sample(all_files, n)
 
     def split_train_val_test(
