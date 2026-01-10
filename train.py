@@ -219,7 +219,7 @@ if __name__ == "__main__":
             fixed_length=config["fix_length"],
         )
         dm.prepare_data()
-        ckpt_dir: str = config["model"]
+        ckpt_dir: str = f"{config['model']}-{config['dataset']}"
         # Let Lightning manage the W&B run; it ensures metrics/images logged via
         # `self.logger` go to W&B.
         wandb_logger = WandbLogger(
