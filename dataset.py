@@ -667,7 +667,7 @@ class DataDataset(Dataset):
         self,
         assign_fn: Callable[[str], SplitName],
         *,
-        use_basename: bool = True,
+        use_basename: bool = False,
     ) -> tuple[Subset["DataDataset"], Subset["DataDataset"], Subset["DataDataset"]]:
         """Split dataset into (train, val, test) using assign_fn(filename)->split.
 
@@ -725,6 +725,15 @@ class DataModule(L.LightningDataModule):
         self.dataset_info = dataset_info
         self.dataset_path: str = f"{DATA_PATH}/{self.dataset_info.dataset_name}"
         self.seed = seed
+
+        self.whole_ds: DataDataset | None = None
+        self.seen_ds: DataDataset | None = None
+
+        self.train_ds: Subset[DataDataset] | None = None
+        self.val_ds: Subset[DataDataset] | None = None
+        self.test_ds: Subset[DataDataset] | None = None
+
+        self._did_split: bool = False
 
     def prepare_data(self) -> None:
         print(f"Preparing dataset: {self.dataset_info.dataset_name}")
@@ -820,6 +829,10 @@ class DataModule(L.LightningDataModule):
         return mapping
 
     def train_dataloader(self):
+        if self.train_ds is None:
+            raise RuntimeError(
+                "train_dataloader() called before setup(). Call setup('fit') first."
+            )
         label_to_indices = self._label_to_subset_indices(self.train_ds)
         return DataLoader(
             self.train_ds,
@@ -834,6 +847,10 @@ class DataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self):
+        if self.val_ds is None:
+            raise RuntimeError(
+                "val_dataloader() called before setup(). Call setup('fit') first."
+            )
         label_to_indices = self._label_to_subset_indices(self.val_ds)
         return DataLoader(
             self.val_ds,
@@ -848,6 +865,10 @@ class DataModule(L.LightningDataModule):
         )
 
     def test_dataloader(self):
+        if self.test_ds is None:
+            raise RuntimeError(
+                "test_dataloader() called before setup(). Call setup('test') first."
+            )
         label_to_indices = self._label_to_subset_indices(self.test_ds)
         return DataLoader(
             self.test_ds,

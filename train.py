@@ -4,6 +4,7 @@ import lightning as L
 from model import ConvStatsPoolEncoder, GRUEncoder
 from dataset import DataModule, cache_mfccs
 from speech_commands import speech_commands_dataset_info
+from arabic import arabic_dataset_info
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 import os
@@ -110,6 +111,12 @@ if __name__ == "__main__":
         default=32,
         help="fix length of input sequences",
     )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="dataset to use: 'speech_commands' or 'arabic'",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -132,7 +139,17 @@ if __name__ == "__main__":
             "threshold": args.threshold,
             "fix_length": args.fix_length,
             "model": args.model,
+            "dataset": args.dataset,
         }
+        if config["dataset"] == "arabic":
+            dataset_info = arabic_dataset_info
+        elif config["dataset"] == "speech_commands":
+            dataset_info = speech_commands_dataset_info
+        else:
+            raise ValueError(
+                f"Unknown dataset: {config['dataset']}. "
+                "Please specify --dataset as 'speech_commands' or 'arabic'."
+            )
         if config["model"] == "conv":
             config.update({"channels": 128})
             model = ConvStatsPoolEncoder(
@@ -143,7 +160,7 @@ if __name__ == "__main__":
                 l2_normalize=config["l2"],
                 margin=config["margin"],
                 threshold=config["threshold"],
-                dataset_info=speech_commands_dataset_info,
+                dataset_info=dataset_info,
                 det_curves=config["det_curves"],
             )
         else:
@@ -156,7 +173,7 @@ if __name__ == "__main__":
                 margin=config["margin"],
                 l2_normalize=config["l2"],
                 threshold=config["threshold"],
-                dataset_info=speech_commands_dataset_info,
+                dataset_info=dataset_info,
                 det_curves=config["det_curves"],
             )
         print("Model")
@@ -164,7 +181,7 @@ if __name__ == "__main__":
         print("config")
         print(config)
         dm = DataModule(
-            dataset_info=speech_commands_dataset_info,
+            dataset_info=dataset_info,
             num_workers=args.num_workers,
             n_mfcc=config["n_mfcc"],
             sr=SR,
