@@ -32,7 +32,6 @@ SEEN_WORDS: List[str] = [
     "happy",
     "house",
     "sheila",
-    "background_noise",
     "stop",
 ]
 
@@ -136,6 +135,8 @@ def prepare_speech_commands():
 
 
 def split_function(filename: str) -> SplitName:
+    if (filename.find("background_noise") != -1) or (filename.find("background") != -1):
+        return "train"
     return which_set(filename, validation_percentage=10.0, testing_percentage=10.0)
 
 
