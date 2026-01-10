@@ -138,7 +138,6 @@ def _load_split_sets(base_dir: str) -> tuple[set[str], set[str]]:
 
 def split_function(filename: str) -> SplitName:
     # filename is the path to the wav file
-    print("FILENAME:", filename)
     base_dir = os.path.dirname(os.path.dirname(filename))
 
     test_files, val_files = _load_split_sets(base_dir)

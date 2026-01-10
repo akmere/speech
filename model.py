@@ -399,6 +399,7 @@ class GRUEncoder(L.LightningModule):
         threshold: float,
         dataset_info: DatasetInfo,
         det_curves: bool,
+        embeddings_words: list[str],
         l2_normalize: bool = True,
     ):
         super().__init__()
@@ -411,6 +412,7 @@ class GRUEncoder(L.LightningModule):
         self.threshold = threshold
         self.dataset_info = dataset_info
         self.det_curves = det_curves
+        self.embeddings_words = embeddings_words
 
         self.gru = nn.GRU(
             input_size=input_dim,
@@ -554,18 +556,7 @@ class GRUEncoder(L.LightningModule):
                 save_path=embeddings_path,
                 dataset_info=self.dataset_info,
                 model=self,
-                words=[
-                    "yes",
-                    "no",
-                    "down",
-                    "three",
-                    "marvin",
-                    "tree",
-                    "backward",
-                    "forward",
-                    "follow",
-                    "visual",
-                ],
+                words=self.embeddings_words,
             )
             if isinstance(self.logger, WandbLogger):
                 self.logger.log_image(
@@ -595,6 +586,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
         threshold: float,
         dataset_info: DatasetInfo,
         det_curves: bool,
+        embeddings_words: list[str],
         l2_normalize: bool = True,
     ):
         super().__init__()
@@ -607,6 +599,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
         self.threshold = threshold
         self.dataset_info = dataset_info
         self.det_curves = det_curves
+        self.embeddings_words = embeddings_words
 
         self.net = nn.Sequential(
             nn.Conv1d(input_dim, channels, kernel_size=5, padding=2, bias=False),
@@ -767,18 +760,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 save_path=embeddings_path,
                 dataset_info=self.dataset_info,
                 model=self,
-                words=[
-                    "yes",
-                    "no",
-                    "down",
-                    "three",
-                    "marvin",
-                    "tree",
-                    "backward",
-                    "forward",
-                    "follow",
-                    "visual",
-                ],
+                words=self.embeddings_words,
             )
             if isinstance(self.logger, WandbLogger):
                 self.logger.log_image(

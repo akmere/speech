@@ -143,8 +143,33 @@ if __name__ == "__main__":
         }
         if config["dataset"] == "arabic":
             dataset_info = arabic_dataset_info
+            embeddings_words = [
+                "nine",
+                "right",
+                "left",
+                "up",
+                "disable",
+                "move",
+                "rotate",
+                "record",
+                "enter",
+                "digit",
+            ]
         elif config["dataset"] == "speech_commands":
             dataset_info = speech_commands_dataset_info
+            embeddings_words = [
+                "yes",
+                "no",
+                "down",
+                "three",
+                "marvin",
+                "tree",
+                "backward",
+                "forward",
+                "follow",
+                "visual",
+            ]
+
         else:
             raise ValueError(
                 f"Unknown dataset: {config['dataset']}. "
@@ -161,6 +186,7 @@ if __name__ == "__main__":
                 margin=config["margin"],
                 threshold=config["threshold"],
                 dataset_info=dataset_info,
+                embeddings_words=embeddings_words,
                 det_curves=config["det_curves"],
             )
         else:
@@ -174,6 +200,7 @@ if __name__ == "__main__":
                 l2_normalize=config["l2"],
                 threshold=config["threshold"],
                 dataset_info=dataset_info,
+                embeddings_words=embeddings_words,
                 det_curves=config["det_curves"],
             )
         print("Model")
