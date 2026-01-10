@@ -20,12 +20,50 @@ from dataset import (
 )
 
 from matplotlib import pyplot as plt
+from matplotlib import ticker as mticker
 
 try:
     # Optional: enables "true" DET axes (normal deviate / probit)
     from scipy.stats import norm as _norm
 except Exception:
     _norm = None
+
+
+_DET_MIN_RATE = 1e-2
+_DET_MAX_RATE = 1.0
+_DET_TICKS = (1e-2, 2e-2, 5e-2, 1e-1, 2e-1, 5e-1)
+
+
+def _fmt_det_tick(x: float, _pos: int) -> str:
+    # Match the DET tick labels we display: 0.01 0.02 0.05 0.1 0.2 0.5
+    if x >= 1.0:
+        return "1.00"
+    if x >= 0.1:
+        return f"{x:.1f}"
+    return f"{x:.2f}"
+
+
+def style_det_axes(ax) -> None:
+    """Style axes to look like classic DET (log-log on [0.01, 1]).
+
+    Note: log scale cannot include 0, so we clamp the visible range to 0.01..1.
+    """
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(_DET_MIN_RATE, _DET_MAX_RATE)
+    ax.set_ylim(_DET_MIN_RATE, _DET_MAX_RATE)
+
+    ax.xaxis.set_major_locator(mticker.FixedLocator(_DET_TICKS))
+    ax.yaxis.set_major_locator(mticker.FixedLocator(_DET_TICKS))
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(_fmt_det_tick))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(_fmt_det_tick))
+
+    # Only show the major grid lines corresponding to the labeled ticks.
+    ax.minorticks_off()
+    ax.xaxis.set_minor_locator(mticker.NullLocator())
+    ax.yaxis.set_minor_locator(mticker.NullLocator())
+    ax.grid(True, which="major", alpha=0.35)
+    ax.grid(False, which="minor")
 
 
 # Independently of how the system is configured, the prediction is
@@ -264,16 +302,19 @@ def det_points_for_thresholds_split(
     )
 
     # Use a shared threshold range across both sets so the curve is well-defined.
+    # Sweep beyond the observed max distance to reach more extreme operating points.
     all_d = (
         np.concatenate([td, nd]) if (td.size and nd.size) else (td if td.size else nd)
     )
-    lo = float(all_d.min()) if all_d.size else 0.0
-    hi = float(all_d.max()) if all_d.size else 1.0
+    observed_hi = float(all_d.max()) if all_d.size else 1.0
+    lo = 0.0
+    hi = observed_hi * 2.0
     if not np.isfinite(lo) or not np.isfinite(hi):
         empty = np.asarray([], dtype=np.float64)
         return empty, empty, empty
     if hi <= lo:
         hi = lo + 1e-6
+    print(f"Threshold range: lo={lo}, hi={hi}")
 
     thresholds = np.linspace(lo, hi, int(n_thresholds), endpoint=True, dtype=np.float64)
 
@@ -291,6 +332,146 @@ def det_points_for_thresholds_split(
         fpr = np.zeros_like(thresholds)
 
     return thresholds, mdr, fpr
+
+
+@torch.no_grad()
+def det_points_for_thresholds_split_avg_per_keyword(
+    model: "ConvStatsPoolEncoder | GRUEncoder",
+    keyword_embedding_index: KeywordEmbeddingIndex,
+    dataset_info: DatasetInfo,
+    *,
+    target_words: list[str],
+    non_target_words: list[str],
+    n_per_word: int = 100,
+    n_thresholds: int = 200,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """DET sweep computed per keyword then macro-averaged across keywords.
+
+    This matches the common isolated-word KWS reporting described in the paper:
+    compute a DET curve for each keyword, then average to get a single curve.
+
+    Per keyword w:
+      - positives: samples of w
+      - negatives: samples of non_target_words
+      - miss if (nearest keyword != w) OR (dist >= thr)
+      - false alarm if (nearest keyword == w) AND (dist < thr) on negatives
+
+    Threshold is in L2 distance units (same convention as classify_embedding()).
+    """
+
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+
+    kw = keyword_embedding_index.embeddings.to(model_device)
+    keywords = keyword_embedding_index.keywords
+    word_to_kw_idx = {w: i for i, w in enumerate(keywords)}
+
+    non_target_set = set(non_target_words)
+
+    # Evaluate the union of the provided word lists (avoid duplicate sampling).
+    eval_words: list[str] = []
+    seen: set[str] = set()
+    for w in list(target_words) + list(non_target_words):
+        if w not in seen:
+            eval_words.append(w)
+            seen.add(w)
+
+    true_word_list: list[str] = []
+    best_idx_list: list[int] = []
+    best_dist_list: list[float] = []
+    is_non_target_list: list[bool] = []
+
+    for w in eval_words:
+        for sample in dataset_info.sample_word(w, n=n_per_word):
+            dataset, word, filename = extract_dataset_word_filename(sample)
+            mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
+            emb = model(mfcc.unsqueeze(0)).squeeze(0)
+
+            diff = kw - emb.unsqueeze(0)
+            dist2 = (diff * diff).sum(dim=1)
+            bi = int(dist2.argmin().item())
+            bd = float(torch.sqrt(dist2[bi]).item())
+
+            true_word_list.append(word)
+            best_idx_list.append(bi)
+            best_dist_list.append(bd)
+            is_non_target_list.append(word in non_target_set)
+
+    if not best_dist_list:
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+
+    true_words = np.asarray(true_word_list, dtype=object)
+    pred_idx = np.asarray(best_idx_list, dtype=np.int64)
+    dist = np.asarray(best_dist_list, dtype=np.float64)
+    is_non_target = np.asarray(is_non_target_list, dtype=bool)
+
+    # Shared threshold grid (needed to average curves keyword-wise).
+    # Sweep beyond the observed max distance to reach more extreme operating points.
+    observed_hi = float(np.nanmax(dist))
+    lo = 0.0
+    hi = observed_hi * 2.0
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+    if hi <= lo:
+        hi = lo + 1e-6
+    print(f"Threshold range: lo={lo}, hi={hi}")
+    thresholds = np.linspace(lo, hi, int(n_thresholds), endpoint=True, dtype=np.float64)
+
+    # Negatives are shared for all per-keyword detectors in this split.
+    neg_mask = is_non_target
+    neg_dist = dist[neg_mask]
+    neg_pred = pred_idx[neg_mask]
+    n_neg = int(neg_dist.shape[0])
+    if n_neg == 0:
+        # Degenerate: no negatives. Keep shape consistent.
+        mdr = np.zeros_like(thresholds)
+        return thresholds, mdr, np.zeros_like(thresholds)
+
+    sum_mdr = np.zeros_like(thresholds, dtype=np.float64)
+    sum_fpr = np.zeros_like(thresholds, dtype=np.float64)
+    used = 0
+
+    for w in target_words:
+        kw_idx = word_to_kw_idx.get(w)
+        if kw_idx is None:
+            continue
+
+        pos_mask = true_words == w
+        pos_dist = dist[pos_mask]
+        pos_pred = pred_idx[pos_mask]
+        n_pos = int(pos_dist.shape[0])
+        if n_pos == 0:
+            continue
+
+        # MDR_w(thr): misses = wrong_nn + correct_nn_with_dist>=thr
+        correct_mask = pos_pred == kw_idx
+        correct_d = np.sort(pos_dist[correct_mask])
+        n_correct = int(correct_d.shape[0])
+        n_wrong = n_pos - n_correct
+
+        # Count correct detections with dist < thr
+        correct_lt = np.searchsorted(correct_d, thresholds, side="left")
+        misses = n_wrong + (n_correct - correct_lt)
+        mdr_w = misses.astype(np.float64) / float(n_pos)
+
+        # FPR_w(thr): negatives classified as w with dist < thr
+        neg_match_d = np.sort(neg_dist[neg_pred == kw_idx])
+        fp = np.searchsorted(neg_match_d, thresholds, side="left")
+        fpr_w = fp.astype(np.float64) / float(n_neg)
+
+        sum_mdr += mdr_w
+        sum_fpr += fpr_w
+        used += 1
+
+    if used == 0:
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+
+    return thresholds, (sum_mdr / float(used)), (sum_fpr / float(used))
 
 
 @torch.no_grad()
@@ -648,8 +829,8 @@ class GRUEncoder(L.LightningModule):
             auc_roc_u = float("nan")
             auc_det_u = float("nan")
 
-            # Seen: targets=seen, non-targets=unseen
-            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split(
+            # Seen: per-keyword DET (targets=seen, non-targets=unseen), then average.
+            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split_avg_per_keyword(
                 self,
                 seen_index,
                 self.dataset_info,
@@ -657,7 +838,12 @@ class GRUEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.unseen_words,
             )
             if thr_s.size:
-                auc_roc_s, auc_det_s = auc_from_det_points(fpr_s, mdr_s)
+                # Per-keyword averaged DET curves generally do NOT span FPR in [0, 1]
+                # (max FPR is bounded by how often negatives' nearest keyword is the target).
+                # So compute a *partial* AUC over the observed FPR range.
+                auc_roc_s, auc_det_s = auc_from_det_points(
+                    fpr_s, mdr_s, add_endpoints=False
+                )
                 self.log_dict(
                     {"auc_roc_seen": auc_roc_s, "auc_det_seen": auc_det_s},
                     prog_bar=True,
@@ -665,8 +851,8 @@ class GRUEncoder(L.LightningModule):
                     on_epoch=True,
                 )
 
-            # Unseen: targets=unseen, non-targets=seen
-            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split(
+            # Unseen: per-keyword DET (targets=unseen, non-targets=seen), then average.
+            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split_avg_per_keyword(
                 self,
                 unseen_index,
                 self.dataset_info,
@@ -674,7 +860,9 @@ class GRUEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.seen_words,
             )
             if thr_u.size:
-                auc_roc_u, auc_det_u = auc_from_det_points(fpr_u, mdr_u)
+                auc_roc_u, auc_det_u = auc_from_det_points(
+                    fpr_u, mdr_u, add_endpoints=False
+                )
                 self.log_dict(
                     {"auc_roc_unseen": auc_roc_u, "auc_det_unseen": auc_det_u},
                     prog_bar=True,
@@ -686,23 +874,26 @@ class GRUEncoder(L.LightningModule):
             if thr_s.size or thr_u.size:
                 fig, ax = plt.subplots(figsize=(6, 6))
 
+                # Avoid log(0) and match a classic DET view range.
+                eps = _DET_MIN_RATE
+
                 if thr_s.size:
                     ax.plot(
-                        fpr_s,
-                        mdr_s,
-                        label=f"Seen targets (AUC_det={auc_det_s:.4f})",
+                        np.clip(fpr_s, eps, 1.0),
+                        np.clip(mdr_s, eps, 1.0),
+                        label=f"Seen targets (pAUC_det={auc_det_s:.4f})",
                     )
                 if thr_u.size:
                     ax.plot(
-                        fpr_u,
-                        mdr_u,
-                        label=f"Unseen targets (AUC_det={auc_det_u:.4f})",
+                        np.clip(fpr_u, eps, 1.0),
+                        np.clip(mdr_u, eps, 1.0),
+                        label=f"Unseen targets (pAUC_det={auc_det_u:.4f})",
                     )
 
+                style_det_axes(ax)
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET curves (epoch {epoch})")
-                ax.grid(True, alpha=0.3)
+                ax.set_title(f"DET curves (per-keyword avg, epoch {epoch})")
                 ax.legend(loc="best")
 
                 out_path = os.path.join(
@@ -919,8 +1110,8 @@ class ConvStatsPoolEncoder(L.LightningModule):
             auc_roc_u = float("nan")
             auc_det_u = float("nan")
 
-            # Seen: targets=seen, non-targets=unseen
-            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split(
+            # Seen: per-keyword DET (targets=seen, non-targets=unseen), then average.
+            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split_avg_per_keyword(
                 self,
                 seen_index,
                 self.dataset_info,
@@ -928,7 +1119,11 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.unseen_words,
             )
             if thr_s.size:
-                auc_roc_s, auc_det_s = auc_from_det_points(fpr_s, mdr_s)
+                # Per-keyword averaged DET curves generally do NOT span FPR in [0, 1].
+                # Compute partial AUC over observed FPR range.
+                auc_roc_s, auc_det_s = auc_from_det_points(
+                    fpr_s, mdr_s, add_endpoints=False
+                )
                 self.log_dict(
                     {"auc_roc_seen": auc_roc_s, "auc_det_seen": auc_det_s},
                     prog_bar=True,
@@ -936,8 +1131,8 @@ class ConvStatsPoolEncoder(L.LightningModule):
                     on_epoch=True,
                 )
 
-            # Unseen: targets=unseen, non-targets=seen
-            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split(
+            # Unseen: per-keyword DET (targets=unseen, non-targets=seen), then average.
+            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split_avg_per_keyword(
                 self,
                 unseen_index,
                 self.dataset_info,
@@ -945,7 +1140,9 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.seen_words,
             )
             if thr_u.size:
-                auc_roc_u, auc_det_u = auc_from_det_points(fpr_u, mdr_u)
+                auc_roc_u, auc_det_u = auc_from_det_points(
+                    fpr_u, mdr_u, add_endpoints=False
+                )
                 self.log_dict(
                     {"auc_roc_unseen": auc_roc_u, "auc_det_unseen": auc_det_u},
                     prog_bar=True,
@@ -957,23 +1154,26 @@ class ConvStatsPoolEncoder(L.LightningModule):
             if thr_s.size or thr_u.size:
                 fig, ax = plt.subplots(figsize=(6, 6))
 
+                # Avoid log(0) and match a classic DET view range.
+                eps = _DET_MIN_RATE
+
                 if thr_s.size:
                     ax.plot(
-                        fpr_s,
-                        mdr_s,
-                        label=f"Seen targets (AUC_det={auc_det_s:.4f})",
+                        np.clip(fpr_s, eps, 1.0),
+                        np.clip(mdr_s, eps, 1.0),
+                        label=f"Seen targets (pAUC_det={auc_det_s:.4f})",
                     )
                 if thr_u.size:
                     ax.plot(
-                        fpr_u,
-                        mdr_u,
-                        label=f"Unseen targets (AUC_det={auc_det_u:.4f})",
+                        np.clip(fpr_u, eps, 1.0),
+                        np.clip(mdr_u, eps, 1.0),
+                        label=f"Unseen targets (pAUC_det={auc_det_u:.4f})",
                     )
 
+                style_det_axes(ax)
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET curves (epoch {epoch})")
-                ax.grid(True, alpha=0.3)
+                ax.set_title(f"DET curves (per-keyword avg, epoch {epoch})")
                 ax.legend(loc="best")
 
                 out_path = os.path.join(
