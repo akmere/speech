@@ -543,13 +543,58 @@ class DataDataset(Dataset):
         path, label = self.items[index]
         word: str = os.path.basename(os.path.dirname(path))
         file_name: str = os.path.basename(path)
-        return extract_or_cache_mfcc(
-            os.path.basename(self.dataset_path),
-            word,
-            file_name,
-            n_mfcc=self.n_mfcc,
-            sr=self.sr,
-        ), self.label_to_idx[label]
+        mfcc = (
+            extract_or_cache_mfcc(
+                os.path.basename(self.dataset_path),
+                word,
+                file_name,
+                n_mfcc=self.n_mfcc,
+                sr=self.sr,
+            ),
+            self.label_to_idx[label],
+        )
+        # pad mfcc frames length to 32
+        mfcc_padded = torch.nn.functional.pad(mfcc[0], (0, 0, 0, 32 - mfcc[0].shape[0]))
+        return (mfcc_padded, self.label_to_idx[label])
+
+    def check_same_length(self, max_items: int | None = None) -> tuple[bool, int, int]:
+        """Check whether all examples have the same time length (MFCC frames).
+
+        Note: this uses __getitem__, so it measures the length of the returned
+        (possibly padded) tensor.
+        Returns:
+            (all_same, min_len, max_len)
+        """
+        n = len(self.items) if max_items is None else min(len(self.items), max_items)
+
+        first_len: int | None = None
+        min_len: int | None = None
+        max_len: int | None = None
+
+        for i in range(n):
+            x, _ = self[i]  # use __getitem__
+            t = int(x.shape[0])
+
+            if first_len is None:
+                first_len = t
+                min_len = t
+                max_len = t
+            else:
+                min_len = min(min_len, t)  # type: ignore[arg-type]
+                max_len = max(max_len, t)  # type: ignore[arg-type]
+
+        if first_len is None:
+            return True, 0, 0
+
+        return (min_len == max_len), int(min_len), int(max_len)  # type: ignore[arg-type]
+
+    def assert_same_length(self, max_items: int | None = None) -> None:
+        """Raise if the dataset contains variable-length examples."""
+        ok, min_len, max_len = self.check_same_length(max_items=max_items)
+        if not ok:
+            raise ValueError(
+                f"Dataset contains variable lengths (min={min_len}, max={max_len})."
+            )
 
 
 class DataModule(L.LightningDataModule):
@@ -591,6 +636,10 @@ class DataModule(L.LightningDataModule):
             self.dataset_info.seen_words + self.dataset_info.unseen_words,
             n_mfcc=self.n_mfcc,
             sr=self.sr,
+        )
+        same_length, min_length, max_length = self.whole_ds.check_same_length()
+        print(
+            f"Dataset length check: same_length={same_length}, min_length={min_length}, max_length={max_length}"
         )
         self.seen_ds = DataDataset(
             self.dataset_path,

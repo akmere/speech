@@ -2,6 +2,7 @@ import random
 from typing import Any, Type
 import lightning as L
 import torch
+import numpy as np
 
 from dataset import DatasetInfo, extract_dataset_word_filename, extract_or_cache_mfcc
 
@@ -56,3 +57,14 @@ def load_lightning_module(
         strict = init_kwargs.pop("strict", True) if "strict" in init_kwargs else True
         model.load_state_dict(state_dict, strict=strict)
         return model
+
+
+def pad_wav(wav, wav_max_length, pad=0):
+    """Pads audio wave sequence to be `wav_max_length` long."""
+    dim = wav.shape[1]
+    padded = np.zeros((wav_max_length, dim)) + pad
+    if len(wav) > wav_max_length:
+        wav = wav[:wav_max_length]
+    length = len(wav)
+    padded[:length, :] = wav
+    return padded, length

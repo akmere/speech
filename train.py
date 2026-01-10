@@ -98,6 +98,12 @@ if __name__ == "__main__":
         default=1.0,
         help="threshold for classification",
     )
+    parser.add_argument(
+        "--nolog",
+        action="store_true",
+        default=None,
+        help="disable logging",
+    )
     args = parser.parse_args()
     if args.cache:
         cache_mfccs(args.cache)
@@ -182,9 +188,9 @@ if __name__ == "__main__":
             devices=args.devices,
             min_epochs=1,
             max_epochs=args.epochs,
-            logger=wandb_logger,
-            enable_checkpointing=True,
-            callbacks=[checkpoint_callback],
+            logger=wandb_logger if not args.nolog else False,
+            enable_checkpointing=not args.nolog,
+            callbacks=[checkpoint_callback] if not args.nolog else [],
             num_sanity_val_steps=0,
         )
         trainer.fit(model, datamodule=dm)
