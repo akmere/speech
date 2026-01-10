@@ -33,6 +33,7 @@ SEEN_WORDS: List[str] = [
     "house",
     "sheila",
     "stop",
+    "background_noise",
 ]
 
 UNSEEN_WORDS: List[str] = [
