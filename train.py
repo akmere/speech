@@ -33,7 +33,7 @@ if __name__ == "__main__":
         help="dataset to cache mfccs for",
     )
     parser.add_argument(
-        "--num_workers",
+        "--num-workers",
         type=int,
         default=4,
         help="DataLoader workers (set >0 after confirming stability)",
