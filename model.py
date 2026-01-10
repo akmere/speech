@@ -829,8 +829,9 @@ class GRUEncoder(L.LightningModule):
             auc_roc_u = float("nan")
             auc_det_u = float("nan")
 
-            # Seen: per-keyword DET (targets=seen, non-targets=unseen), then average.
-            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split_avg_per_keyword(
+            # Seen: DET sweep using the same decision rule as `classify_embedding`
+            # (nearest keyword + threshold).
+            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split(
                 self,
                 seen_index,
                 self.dataset_info,
@@ -838,12 +839,7 @@ class GRUEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.unseen_words,
             )
             if thr_s.size:
-                # Per-keyword averaged DET curves generally do NOT span FPR in [0, 1]
-                # (max FPR is bounded by how often negatives' nearest keyword is the target).
-                # So compute a *partial* AUC over the observed FPR range.
-                auc_roc_s, auc_det_s = auc_from_det_points(
-                    fpr_s, mdr_s, add_endpoints=False
-                )
+                auc_roc_s, auc_det_s = auc_from_det_points(fpr_s, mdr_s)
                 self.log_dict(
                     {"auc_roc_seen": auc_roc_s, "auc_det_seen": auc_det_s},
                     prog_bar=True,
@@ -851,8 +847,8 @@ class GRUEncoder(L.LightningModule):
                     on_epoch=True,
                 )
 
-            # Unseen: per-keyword DET (targets=unseen, non-targets=seen), then average.
-            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split_avg_per_keyword(
+            # Unseen: DET sweep using the same decision rule as `classify_embedding`.
+            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split(
                 self,
                 unseen_index,
                 self.dataset_info,
@@ -860,9 +856,7 @@ class GRUEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.seen_words,
             )
             if thr_u.size:
-                auc_roc_u, auc_det_u = auc_from_det_points(
-                    fpr_u, mdr_u, add_endpoints=False
-                )
+                auc_roc_u, auc_det_u = auc_from_det_points(fpr_u, mdr_u)
                 self.log_dict(
                     {"auc_roc_unseen": auc_roc_u, "auc_det_unseen": auc_det_u},
                     prog_bar=True,
@@ -881,19 +875,19 @@ class GRUEncoder(L.LightningModule):
                     ax.plot(
                         np.clip(fpr_s, eps, 1.0),
                         np.clip(mdr_s, eps, 1.0),
-                        label=f"Seen targets (pAUC_det={auc_det_s:.4f})",
+                        label=f"Seen targets (AUC_det={auc_det_s:.4f})",
                     )
                 if thr_u.size:
                     ax.plot(
                         np.clip(fpr_u, eps, 1.0),
                         np.clip(mdr_u, eps, 1.0),
-                        label=f"Unseen targets (pAUC_det={auc_det_u:.4f})",
+                        label=f"Unseen targets (AUC_det={auc_det_u:.4f})",
                     )
 
                 style_det_axes(ax)
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET curves (per-keyword avg, epoch {epoch})")
+                ax.set_title(f"DET curves (classifier, epoch {epoch})")
                 ax.legend(loc="best")
 
                 out_path = os.path.join(
@@ -1110,8 +1104,8 @@ class ConvStatsPoolEncoder(L.LightningModule):
             auc_roc_u = float("nan")
             auc_det_u = float("nan")
 
-            # Seen: per-keyword DET (targets=seen, non-targets=unseen), then average.
-            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split_avg_per_keyword(
+            # Seen: DET sweep using the same decision rule as `classify_embedding`.
+            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split(
                 self,
                 seen_index,
                 self.dataset_info,
@@ -1119,11 +1113,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.unseen_words,
             )
             if thr_s.size:
-                # Per-keyword averaged DET curves generally do NOT span FPR in [0, 1].
-                # Compute partial AUC over observed FPR range.
-                auc_roc_s, auc_det_s = auc_from_det_points(
-                    fpr_s, mdr_s, add_endpoints=False
-                )
+                auc_roc_s, auc_det_s = auc_from_det_points(fpr_s, mdr_s)
                 self.log_dict(
                     {"auc_roc_seen": auc_roc_s, "auc_det_seen": auc_det_s},
                     prog_bar=True,
@@ -1131,8 +1121,8 @@ class ConvStatsPoolEncoder(L.LightningModule):
                     on_epoch=True,
                 )
 
-            # Unseen: per-keyword DET (targets=unseen, non-targets=seen), then average.
-            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split_avg_per_keyword(
+            # Unseen: DET sweep using the same decision rule as `classify_embedding`.
+            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split(
                 self,
                 unseen_index,
                 self.dataset_info,
@@ -1140,9 +1130,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
                 non_target_words=self.dataset_info.seen_words,
             )
             if thr_u.size:
-                auc_roc_u, auc_det_u = auc_from_det_points(
-                    fpr_u, mdr_u, add_endpoints=False
-                )
+                auc_roc_u, auc_det_u = auc_from_det_points(fpr_u, mdr_u)
                 self.log_dict(
                     {"auc_roc_unseen": auc_roc_u, "auc_det_unseen": auc_det_u},
                     prog_bar=True,
@@ -1161,19 +1149,19 @@ class ConvStatsPoolEncoder(L.LightningModule):
                     ax.plot(
                         np.clip(fpr_s, eps, 1.0),
                         np.clip(mdr_s, eps, 1.0),
-                        label=f"Seen targets (pAUC_det={auc_det_s:.4f})",
+                        label=f"Seen targets (AUC_det={auc_det_s:.4f})",
                     )
                 if thr_u.size:
                     ax.plot(
                         np.clip(fpr_u, eps, 1.0),
                         np.clip(mdr_u, eps, 1.0),
-                        label=f"Unseen targets (pAUC_det={auc_det_u:.4f})",
+                        label=f"Unseen targets (AUC_det={auc_det_u:.4f})",
                     )
 
                 style_det_axes(ax)
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET curves (per-keyword avg, epoch {epoch})")
+                ax.set_title(f"DET curves (classifier, epoch {epoch})")
                 ax.legend(loc="best")
 
                 out_path = os.path.join(
