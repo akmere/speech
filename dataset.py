@@ -522,12 +522,20 @@ class PKBatchSampler(Sampler[list[int]]):
 
 
 class DataDataset(Dataset):
-    def __init__(self, dataset_path: str, words: List[str], n_mfcc: int, sr: int):
+    def __init__(
+        self,
+        dataset_path: str,
+        words: List[str],
+        n_mfcc: int,
+        sr: int,
+        fixed_T: int = 32,
+    ):
         self.n_mfcc = n_mfcc
         self.sr = sr
         self.label_to_idx: dict[str, int] = {w: i for i, w in enumerate(words)}
         self.items: List[tuple[str, str]] = []
         self.dataset_path = dataset_path
+        self.fixed_T = int(fixed_T)
         count: int = 0
         for word in words:
             for item_name in os.listdir(f"{dataset_path}/{word}"):
@@ -539,23 +547,31 @@ class DataDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, int]:
         path, label = self.items[index]
         word: str = os.path.basename(os.path.dirname(path))
         file_name: str = os.path.basename(path)
-        mfcc = (
-            extract_or_cache_mfcc(
-                os.path.basename(self.dataset_path),
-                word,
-                file_name,
-                n_mfcc=self.n_mfcc,
-                sr=self.sr,
-            ),
-            self.label_to_idx[label],
-        )
-        # pad mfcc frames length to 32
-        mfcc_padded = torch.nn.functional.pad(mfcc[0], (0, 0, 0, 32 - mfcc[0].shape[0]))
-        return (mfcc_padded, self.label_to_idx[label])
+
+        x = extract_or_cache_mfcc(
+            os.path.basename(self.dataset_path),
+            word,
+            file_name,
+            n_mfcc=self.n_mfcc,
+            sr=self.sr,
+        )  # (T, n_mfcc)
+
+        t = int(x.shape[0])
+        fixed_T = self.fixed_T
+        length = min(t, fixed_T)
+
+        # truncate or pad along time dimension
+        if t >= fixed_T:
+            x_fixed = x[:fixed_T]
+        else:
+            x_fixed = F.pad(x, (0, 0, 0, fixed_T - t))
+
+        y = self.label_to_idx[label]
+        return x_fixed, length, y
 
     def check_same_length(self, max_items: int | None = None) -> tuple[bool, int, int]:
         """Check whether all examples have the same time length (MFCC frames).
@@ -572,7 +588,7 @@ class DataDataset(Dataset):
         max_len: int | None = None
 
         for i in range(n):
-            x, _ = self[i]  # use __getitem__
+            x, _, _ = self[i]  # use __getitem__
             t = int(x.shape[0])
 
             if first_len is None:
@@ -637,9 +653,9 @@ class DataModule(L.LightningDataModule):
             n_mfcc=self.n_mfcc,
             sr=self.sr,
         )
-        same_length, min_length, max_length = self.whole_ds.check_same_length()
+        same_length, min_len, max_len = self.whole_ds.check_same_length()
         print(
-            f"Dataset length check: same_length={same_length}, min_length={min_length}, max_length={max_length}"
+            f"Dataset length check: same_length={same_length}, min_len={min_len}, max_len={max_len}"
         )
         self.seen_ds = DataDataset(
             self.dataset_path,
@@ -651,12 +667,34 @@ class DataModule(L.LightningDataModule):
             self.seen_ds, [0.8, 0.1, 0.1]
         )
 
-    def _collate_fn(self, batch: List[Tuple[torch.Tensor, int]]):
-        xs, ys = zip(*batch)  # xs: tuple[(T_i, n_mfcc)], ys: tuple[int]
-        lengths = torch.tensor([x.shape[0] for x in xs], dtype=torch.int64)
-        x_padded = pad_sequence(list(xs), batch_first=True)  # (B, T_max, n_mfcc)
-        y = torch.tensor(list(ys), dtype=torch.long)
-        return x_padded, lengths, y
+    # def _collate_fn(self, batch: List[Tuple[torch.Tensor, int]]):
+    #     xs, ys = zip(*batch)  # xs: tuple[(T_i, n_mfcc)], ys: tuple[int]
+    #     lengths = torch.tensor([x.shape[0] for x in xs], dtype=torch.int64)
+    #     x_padded = pad_sequence(list(xs), batch_first=True)  # (B, T_max, n_mfcc)
+    #     y = torch.tensor(list(ys), dtype=torch.long)
+    #     return x_padded, lengths, y
+
+    # def _collate_fn(self, batch: List[Tuple[torch.Tensor, int]]):
+    #     fixed_T = 32  # choose your global fixed length
+
+    #     xs, ys = zip(*batch)  # each x: (T_i, n_mfcc)
+    #     xs_fixed = []
+    #     lengths = []
+
+    #     for x in xs:
+    #         t = int(x.shape[0])
+    #         lengths.append(min(t, fixed_T))
+
+    #         if t >= fixed_T:
+    #             x2 = x[:fixed_T]
+    #         else:
+    #             x2 = F.pad(x, (0, 0, 0, fixed_T - t))  # pad time dim
+    #         xs_fixed.append(x2)
+
+    #     x_padded = torch.stack(xs_fixed, dim=0)  # (B, fixed_T, n_mfcc)
+    #     lengths = torch.tensor(lengths, dtype=torch.int64)
+    #     y = torch.tensor(list(ys), dtype=torch.long)
+    #     return x_padded, lengths, y
 
     def _label_to_subset_indices(self, subset) -> dict[int, list[int]]:
         """
@@ -676,7 +714,7 @@ class DataModule(L.LightningDataModule):
         return DataLoader(
             self.train_ds,
             num_workers=self.num_workers,
-            collate_fn=self._collate_fn,
+            # collate_fn=self._collate_fn,
             batch_sampler=PKBatchSampler(
                 label_to_indices, self.p, self.k, self.steps_per_epoch
             ),
@@ -687,7 +725,7 @@ class DataModule(L.LightningDataModule):
         return DataLoader(
             self.val_ds,
             num_workers=self.num_workers,
-            collate_fn=self._collate_fn,
+            # collate_fn=self._collate_fn,
             batch_sampler=PKBatchSampler(
                 label_to_indices, self.p, self.k, self.val_steps_per_epoch
             ),
@@ -698,7 +736,7 @@ class DataModule(L.LightningDataModule):
         return DataLoader(
             self.test_ds,
             num_workers=self.num_workers,
-            collate_fn=self._collate_fn,
+            # collate_fn=self._collate_fn,
             batch_sampler=PKBatchSampler(
                 label_to_indices, self.p, self.k, self.steps_per_epoch
             ),
