@@ -755,27 +755,27 @@ class DataModule(L.LightningDataModule):
                 fixed_T=self.fixed_length,
             )
 
-        # Only split once, and make it deterministic
-        if (stage == "fit" or stage is None) and (
-            self.train_ds is None or self.val_ds is None
-        ):
-            # g = torch.Generator().manual_seed(self.seed)
-            # self.train_ds, self.val_ds, self.test_ds = random_split(
-            #     self.seen_ds, [0.8, 0.1, 0.1], generator=g
-            # )
-            self.train_ds, self.val_ds, self.test_ds = self.seen_ds.split_by_filename(
-                assign_fn=self.dataset_info.split_fn
-            )
+        # Split exactly once (covers fit + test-first usage)
+        if stage in (None, "fit", "test"):
+            existing = (self.train_ds, self.val_ds, self.test_ds)
+            any_set = any(ds is not None for ds in existing)
+            all_set = all(ds is not None for ds in existing)
 
-        # If someone calls setup("test") without setup("fit") first
-        if stage == "test" and self.test_ds is None:
-            # g = torch.Generator().manual_seed(self.seed)
-            # _train, _val, self.test_ds = random_split(
-            #     self.seen_ds, [0.8, 0.1, 0.1], generator=g
-            # )
-            self.train_ds, self.val_ds, self.test_ds = self.seen_ds.split_by_filename(
-                assign_fn=self.dataset_info.split_fn
-            )
+            if any_set and not all_set:
+                raise RuntimeError(
+                    "DataModule has a partial split (some of train/val/test are set). "
+                    "Refusing to re-split to keep splits consistent."
+                )
+
+            if not self._did_split and not all_set:
+                self.train_ds, self.val_ds, self.test_ds = (
+                    self.seen_ds.split_by_filename(assign_fn=self.dataset_info.split_fn)
+                )
+                self._did_split = True
+                # print lengths in one command
+                print(
+                    f"DataModule split: train={len(self.train_ds)}, val={len(self.val_ds)}, test={len(self.test_ds)}"
+                )
 
     # def _collate_fn(self, batch: List[Tuple[torch.Tensor, int]]):
     #     xs, ys = zip(*batch)  # xs: tuple[(T_i, n_mfcc)], ys: tuple[int]
