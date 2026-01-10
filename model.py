@@ -248,7 +248,9 @@ def det_points_for_thresholds(
         return empty, empty, empty
     if hi <= lo:
         hi = lo + 1e-6
-    thresholds = np.linspace(lo, hi, int(n_thresholds), dtype=np.float64)
+    thresholds = np.linspace(
+        lo, hi, int(n_thresholds), endpoint=True, retstep=False, dtype=np.float64
+    )
 
     seen_d = dists_np[is_seen_np]
     seen_correct = nearest_correct_np[is_seen_np]

@@ -656,10 +656,10 @@ class DataModule(L.LightningDataModule):
             sr=self.sr,
             fixed_T=self.fixed_length,
         )
-        same_length, min_len, max_len = self.whole_ds.check_same_length()
-        print(
-            f"Dataset length check: same_length={same_length}, min_len={min_len}, max_len={max_len}"
-        )
+        # same_length, min_len, max_len = self.whole_ds.check_same_length()
+        # print(
+        #     f"Dataset length check: same_length={same_length}, min_len={min_len}, max_len={max_len}"
+        # )
         self.seen_ds = DataDataset(
             self.dataset_path,
             self.dataset_info.seen_words,
@@ -722,6 +722,9 @@ class DataModule(L.LightningDataModule):
             batch_sampler=PKBatchSampler(
                 label_to_indices, self.p, self.k, self.steps_per_epoch
             ),
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
 
     def val_dataloader(self):
@@ -733,6 +736,9 @@ class DataModule(L.LightningDataModule):
             batch_sampler=PKBatchSampler(
                 label_to_indices, self.p, self.k, self.val_steps_per_epoch
             ),
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
 
     def test_dataloader(self):
@@ -744,4 +750,7 @@ class DataModule(L.LightningDataModule):
             batch_sampler=PKBatchSampler(
                 label_to_indices, self.p, self.k, self.steps_per_epoch
             ),
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
