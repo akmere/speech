@@ -184,6 +184,116 @@ def calculate_missed_detection_and_false_positive_rates(
 
 
 @torch.no_grad()
+def det_points_for_thresholds_split(
+    model: "ConvStatsPoolEncoder | GRUEncoder",
+    keyword_embedding_index: KeywordEmbeddingIndex,
+    dataset_info: DatasetInfo,
+    *,
+    target_words: list[str],
+    non_target_words: list[str],
+    n_per_word: int = 100,
+    n_thresholds: int = 200,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """DET sweep for an explicit (target vs non-target) split.
+
+    MDR: fraction of target samples that are missed (wrong nearest keyword OR dist >= thr).
+    FPR: fraction of non-target samples that produce a false alarm (dist < thr).
+    Threshold is in L2 distance units (same convention as classify_embedding()).
+    """
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+
+    kw = keyword_embedding_index.embeddings.to(model_device)
+    keywords = keyword_embedding_index.keywords
+    word_to_idx = {w: i for i, w in enumerate(keywords)}
+
+    # Collect nearest distances for both target + non-target samples
+    target_dists: list[float] = []
+    target_correct: list[bool] = []
+    non_target_dists: list[float] = []
+
+    # Target (positive) samples
+    for w in target_words:
+        for sample in dataset_info.sample_word(w, n=n_per_word):
+            dataset, word, filename = extract_dataset_word_filename(sample)
+            mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
+            emb = model(mfcc.unsqueeze(0)).squeeze(0)
+
+            diff = kw - emb.unsqueeze(0)
+            dist2 = (diff * diff).sum(dim=1)
+            best_idx = int(dist2.argmin().item())
+            best_dist = float(torch.sqrt(dist2[best_idx]).item())
+
+            target_dists.append(best_dist)
+            target_correct.append(word_to_idx.get(word, -1) == best_idx)
+
+    # Non-target (negative) samples
+    for w in non_target_words:
+        for sample in dataset_info.sample_word(w, n=n_per_word):
+            dataset, word, filename = extract_dataset_word_filename(sample)
+            mfcc = extract_or_cache_mfcc(dataset, word, filename).to(model_device)
+            emb = model(mfcc.unsqueeze(0)).squeeze(0)
+
+            diff = kw - emb.unsqueeze(0)
+            dist2 = (diff * diff).sum(dim=1)
+            best_idx = int(dist2.argmin().item())
+            best_dist = float(torch.sqrt(dist2[best_idx]).item())
+
+            non_target_dists.append(best_dist)
+
+    if not target_dists and not non_target_dists:
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+
+    td = (
+        np.asarray(target_dists, dtype=np.float64)
+        if target_dists
+        else np.asarray([], dtype=np.float64)
+    )
+    tc = (
+        np.asarray(target_correct, dtype=bool)
+        if target_correct
+        else np.asarray([], dtype=bool)
+    )
+    nd = (
+        np.asarray(non_target_dists, dtype=np.float64)
+        if non_target_dists
+        else np.asarray([], dtype=np.float64)
+    )
+
+    # Use a shared threshold range across both sets so the curve is well-defined.
+    all_d = (
+        np.concatenate([td, nd]) if (td.size and nd.size) else (td if td.size else nd)
+    )
+    lo = float(all_d.min()) if all_d.size else 0.0
+    hi = float(all_d.max()) if all_d.size else 1.0
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty, empty
+    if hi <= lo:
+        hi = lo + 1e-6
+
+    thresholds = np.linspace(lo, hi, int(n_thresholds), endpoint=True, dtype=np.float64)
+
+    # MDR over targets
+    if td.size:
+        missed = (~tc)[None, :] | (td[None, :] >= thresholds[:, None])
+        mdr = missed.mean(axis=1)
+    else:
+        mdr = np.zeros_like(thresholds)
+
+    # FPR over non-targets
+    if nd.size:
+        fpr = (nd[None, :] < thresholds[:, None]).mean(axis=1)
+    else:
+        fpr = np.zeros_like(thresholds)
+
+    return thresholds, mdr, fpr
+
+
+@torch.no_grad()
 def det_points_for_thresholds(
     model: "ConvStatsPoolEncoder | GRUEncoder",
     keyword_embedding_index: KeywordEmbeddingIndex,
@@ -498,59 +608,119 @@ class GRUEncoder(L.LightningModule):
         # them to obtain one DET curve for the seen keywords and
         # one for the unseen ones
 
-        keyword_embeddings = get_keyword_embeddings(
-            self, self.dataset_info.seen_words, self.dataset_info
-        )
-        keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
-            keyword_embeddings, device=self.device
-        )
-        mdr, fpr = calculate_missed_detection_and_false_positive_rates(
-            self,
-            keyword_embedding_index,
-            self.dataset_info,
-            self.dataset_info.seen_words + self.dataset_info.unseen_words,
-            self.threshold,
-        )
+        # keyword_embeddings = get_keyword_embeddings(
+        #     self, self.dataset_info.seen_words, self.dataset_info
+        # )
+        # keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
+        #     keyword_embeddings, device=self.device
+        # )
+        # mdr, fpr = calculate_missed_detection_and_false_positive_rates(
+        #     self,
+        #     keyword_embedding_index,
+        #     self.dataset_info,
+        #     self.dataset_info.seen_words + self.dataset_info.unseen_words,
+        #     self.threshold,
+        # )
 
-        self.log_dict(
-            {
-                "missed_detection_rate": mdr,
-                "false_positive_rate": fpr,
-            }
-        )
+        # self.log_dict(
+        #     {
+        #         "missed_detection_rate": mdr,
+        #         "false_positive_rate": fpr,
+        #     }
+        # )
         if self.det_curves:
             os.makedirs("plots", exist_ok=True)
 
-            thresholds, mdrs, fprs = det_points_for_thresholds(
-                self,
-                keyword_embedding_index,
-                self.dataset_info,
-                self.dataset_info.seen_words + self.dataset_info.unseen_words,
+            seen_kw = get_keyword_embeddings(
+                self, self.dataset_info.seen_words, self.dataset_info
             )
-            if thresholds.size:
-                auc_roc, auc_det = auc_from_det_points(fprs, mdrs)
+            unseen_kw = get_keyword_embeddings(
+                self, self.dataset_info.unseen_words, self.dataset_info
+            )
+            seen_index = KeywordEmbeddingIndex.from_mapping(seen_kw, device=self.device)
+            unseen_index = KeywordEmbeddingIndex.from_mapping(
+                unseen_kw, device=self.device
+            )
+
+            # Initialize AUC values so they are always bound (helps static type checkers).
+            auc_roc_s = float("nan")
+            auc_det_s = float("nan")
+            auc_roc_u = float("nan")
+            auc_det_u = float("nan")
+
+            # Seen: targets=seen, non-targets=unseen
+            thr_s, mdr_s, fpr_s = det_points_for_thresholds_split(
+                self,
+                seen_index,
+                self.dataset_info,
+                target_words=self.dataset_info.seen_words,
+                non_target_words=self.dataset_info.unseen_words,
+            )
+            if thr_s.size:
+                auc_roc_s, auc_det_s = auc_from_det_points(fpr_s, mdr_s)
                 self.log_dict(
-                    {"auc_roc": auc_roc, "auc_det": auc_det},
+                    {"auc_roc_seen": auc_roc_s, "auc_det_seen": auc_det_s},
                     prog_bar=True,
                     on_step=False,
                     on_epoch=True,
                 )
 
-                fig, ax = plt.subplots(figsize=(5, 5))
-                ax.plot(fprs, mdrs)
+            # Unseen: targets=unseen, non-targets=seen
+            thr_u, mdr_u, fpr_u = det_points_for_thresholds_split(
+                self,
+                unseen_index,
+                self.dataset_info,
+                target_words=self.dataset_info.unseen_words,
+                non_target_words=self.dataset_info.seen_words,
+            )
+            if thr_u.size:
+                auc_roc_u, auc_det_u = auc_from_det_points(fpr_u, mdr_u)
+                self.log_dict(
+                    {"auc_roc_unseen": auc_roc_u, "auc_det_unseen": auc_det_u},
+                    prog_bar=True,
+                    on_step=False,
+                    on_epoch=True,
+                )
+
+            # One plot: overlay both curves + legend
+            if thr_s.size or thr_u.size:
+                fig, ax = plt.subplots(figsize=(6, 6))
+
+                if thr_s.size:
+                    ax.plot(
+                        fpr_s,
+                        mdr_s,
+                        label=f"Seen targets (AUC_det={auc_det_s:.4f})",
+                    )
+                if thr_u.size:
+                    ax.plot(
+                        fpr_u,
+                        mdr_u,
+                        label=f"Unseen targets (AUC_det={auc_det_u:.4f})",
+                    )
+
                 ax.set_xlabel("False positive rate")
                 ax.set_ylabel("Missed detection rate")
-                ax.set_title(f"DET (epoch {epoch}) [AUC={auc_det:.4f}]")
+                ax.set_title(f"DET curves (epoch {epoch})")
                 ax.grid(True, alpha=0.3)
-                out_path = os.path.join("plots", f"det_epoch_{epoch}.png")
+                ax.legend(loc="best")
+
+                out_path = os.path.join(
+                    "plots", f"det_seen_vs_unseen_epoch_{epoch}.png"
+                )
                 fig.savefig(out_path, bbox_inches="tight")
                 plt.close(fig)
 
                 if isinstance(self.logger, WandbLogger):
                     self.logger.log_image(
-                        "det_curves",
-                        [wandb.Image(out_path, caption=f"DET curve epoch {epoch}")],
+                        "det_curves_seen_vs_unseen",
+                        [
+                            wandb.Image(
+                                out_path, caption=f"DET seen vs unseen epoch {epoch}"
+                            )
+                        ],
                     )
+
             embeddings_path = os.path.join("plots", f"embeddings_epoch_{epoch}.png")
             draw_embeddings(
                 save_path=embeddings_path,
@@ -703,15 +873,21 @@ class ConvStatsPoolEncoder(L.LightningModule):
             self.print(
                 f"epoch={epoch} validation_loss={validation_loss.detach().cpu().item():.6f}"
             )
-        keyword_embeddings = get_keyword_embeddings(
+        seen_keyword_embeddings = get_keyword_embeddings(
             self, self.dataset_info.seen_words, self.dataset_info
         )
-        keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
-            keyword_embeddings, device=self.device
+        unseen_keyword_embeddings = get_keyword_embeddings(
+            self, self.dataset_info.unseen_words, self.dataset_info
+        )
+        seen_keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
+            seen_keyword_embeddings, device=self.device
+        )
+        unseen_keyword_embedding_index = KeywordEmbeddingIndex.from_mapping(
+            unseen_keyword_embeddings, device=self.device
         )
         mdr, fpr = calculate_missed_detection_and_false_positive_rates(
             self,
-            keyword_embedding_index,
+            seen_keyword_embedding_index,
             self.dataset_info,
             self.dataset_info.seen_words + self.dataset_info.unseen_words,
             self.threshold,
@@ -727,7 +903,7 @@ class ConvStatsPoolEncoder(L.LightningModule):
 
             thresholds, mdrs, fprs = det_points_for_thresholds(
                 self,
-                keyword_embedding_index,
+                seen_keyword_embedding_index,
                 self.dataset_info,
                 self.dataset_info.seen_words + self.dataset_info.unseen_words,
             )
