@@ -1,8 +1,8 @@
-from typing import Callable, List, Tuple, TypedDict
+from typing import Callable, List, Literal, Tuple, TypedDict
 import torch
 from torch import optim, nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, random_split, Sampler
+from torch.utils.data import Dataset, DataLoader, random_split, Sampler, Subset
 from torch.nn.utils.rnn import pad_sequence
 import lightning as L
 from urllib.request import urlretrieve
@@ -15,6 +15,7 @@ import tempfile
 
 DATA_PATH: str = "data"
 CACHE_PATH: str = "cache"
+SplitName = Literal["train", "val", "test"]
 
 
 class DatasetInfo:
@@ -22,6 +23,7 @@ class DatasetInfo:
     dataset_name: str
     seen_words: list[str]
     unseen_words: list[str]
+    split_fn: Callable[[str], SplitName]
 
     def __init__(
         self,
@@ -29,11 +31,13 @@ class DatasetInfo:
         dataset_name: str,
         words: list[str],
         unseen_words: list[str],
+        split_function: Callable[[str], SplitName],
     ):
         self.prepare_data = prepare_data
         self.dataset_name = dataset_name
         self.seen_words = words
         self.unseen_words = unseen_words
+        self.split_fn = split_function
 
     def dataset_path(self) -> str:
         return os.path.join(DATA_PATH, self.dataset_name)
@@ -49,6 +53,53 @@ class DatasetInfo:
             if os.path.isfile(os.path.join(word_dir, f)) and f.endswith(".wav")
         ]
         return random.sample(all_files, n)
+
+    def split_train_val_test(
+        self, words: list[str]
+    ) -> tuple[list[str], list[str], list[str]]:
+        all_files: list[str] = []
+        for word in words:
+            word_dir: str = self.word_path(word)
+            files: list[str] = [
+                os.path.join(DATA_PATH, self.dataset_name, word, f)
+                for f in os.listdir(word_dir)
+                if os.path.isfile(os.path.join(word_dir, f)) and f.endswith(".wav")
+            ]
+            all_files.extend(files)
+        train_files: list[str] = []
+        val_files: list[str] = []
+        test_files: list[str] = []
+        for file in all_files:
+            split = self.split_fn(file)
+            if split == "train":
+                train_files.append(file)
+            elif split == "val":
+                val_files.append(file)
+            elif split == "test":
+                test_files.append(file)
+        return train_files, val_files, test_files
+
+    def test_split(self):
+        # print the lenghts of the sets
+        train_files, val_files, test_files = self.split_train_val_test(self.seen_words)
+        print("Train files:", len(train_files))
+        print("Validation files:", len(val_files))
+        print("Test files:", len(test_files))
+        train_files_u, val_files_u, test_files_u = self.split_train_val_test(
+            self.unseen_words
+        )
+        print("Unseen Train files:", len(train_files_u))
+        print("Unseen Validation files:", len(val_files_u))
+        print("Unseen Test files:", len(test_files_u))
+        print(
+            "Total files:",
+            len(train_files)
+            + len(val_files)
+            + len(test_files)
+            + len(train_files_u)
+            + len(val_files_u)
+            + len(test_files_u),
+        )
 
 
 def extract_dataset_word_filename(file_path: str) -> Tuple[str, str, str]:
@@ -612,6 +663,41 @@ class DataDataset(Dataset):
                 f"Dataset contains variable lengths (min={min_len}, max={max_len})."
             )
 
+    def split_by_filename(
+        self,
+        assign_fn: Callable[[str], SplitName],
+        *,
+        use_basename: bool = True,
+    ) -> tuple[Subset["DataDataset"], Subset["DataDataset"], Subset["DataDataset"]]:
+        """Split dataset into (train, val, test) using assign_fn(filename)->split.
+
+        assign_fn:
+          Called once per item with either basename(path) (default) or full path.
+          Must return one of: "train", "val", "test".
+        """
+        split_to_indices: dict[SplitName, list[int]] = {
+            "train": [],
+            "val": [],
+            "test": [],
+        }
+
+        for i, (path, _word) in enumerate(self.items):
+            key = os.path.basename(path) if use_basename else path
+            split = assign_fn(key)
+            split_to_indices[split].append(i)
+
+        train = Subset(self, split_to_indices["train"])
+        val = Subset(self, split_to_indices["val"])
+        test = Subset(self, split_to_indices["test"])
+
+        if len(train) == 0 or len(val) == 0 or len(test) == 0:
+            raise ValueError(
+                "split_by_filename produced an empty split: "
+                f"train={len(train)}, val={len(val)}, test={len(test)}. "
+                "Adjust your assign_fn or fractions."
+            )
+        return train, val, test
+
 
 class DataModule(L.LightningDataModule):
     def __init__(
@@ -625,6 +711,7 @@ class DataModule(L.LightningDataModule):
         val_steps_per_epoch: int,
         fixed_length: int,
         dataset_info: DatasetInfo,
+        seed: int = 0,
     ) -> None:
         super().__init__()
         self.num_workers = num_workers
@@ -637,6 +724,7 @@ class DataModule(L.LightningDataModule):
         self.fixed_length = fixed_length
         self.dataset_info = dataset_info
         self.dataset_path: str = f"{DATA_PATH}/{self.dataset_info.dataset_name}"
+        self.seed = seed
 
     def prepare_data(self) -> None:
         print(f"Preparing dataset: {self.dataset_info.dataset_name}")
@@ -649,27 +737,45 @@ class DataModule(L.LightningDataModule):
             shutil.copytree(dataset_import_path, self.dataset_path)
 
     def setup(self, stage: str) -> None:
-        self.whole_ds = DataDataset(
-            self.dataset_path,
-            self.dataset_info.seen_words + self.dataset_info.unseen_words,
-            n_mfcc=self.n_mfcc,
-            sr=self.sr,
-            fixed_T=self.fixed_length,
-        )
-        # same_length, min_len, max_len = self.whole_ds.check_same_length()
-        # print(
-        #     f"Dataset length check: same_length={same_length}, min_len={min_len}, max_len={max_len}"
-        # )
-        self.seen_ds = DataDataset(
-            self.dataset_path,
-            self.dataset_info.seen_words,
-            n_mfcc=self.n_mfcc,
-            sr=self.sr,
-            fixed_T=self.fixed_length,
-        )
-        self.train_ds, self.val_ds, self.test_ds = random_split(
-            self.seen_ds, [0.8, 0.1, 0.1]
-        )
+        if self.whole_ds is None:
+            self.whole_ds = DataDataset(
+                self.dataset_path,
+                self.dataset_info.seen_words + self.dataset_info.unseen_words,
+                n_mfcc=self.n_mfcc,
+                sr=self.sr,
+                fixed_T=self.fixed_length,
+            )
+
+        if self.seen_ds is None:
+            self.seen_ds = DataDataset(
+                self.dataset_path,
+                self.dataset_info.seen_words,
+                n_mfcc=self.n_mfcc,
+                sr=self.sr,
+                fixed_T=self.fixed_length,
+            )
+
+        # Only split once, and make it deterministic
+        if (stage == "fit" or stage is None) and (
+            self.train_ds is None or self.val_ds is None
+        ):
+            # g = torch.Generator().manual_seed(self.seed)
+            # self.train_ds, self.val_ds, self.test_ds = random_split(
+            #     self.seen_ds, [0.8, 0.1, 0.1], generator=g
+            # )
+            self.train_ds, self.val_ds, self.test_ds = self.seen_ds.split_by_filename(
+                assign_fn=self.dataset_info.split_fn
+            )
+
+        # If someone calls setup("test") without setup("fit") first
+        if stage == "test" and self.test_ds is None:
+            # g = torch.Generator().manual_seed(self.seed)
+            # _train, _val, self.test_ds = random_split(
+            #     self.seen_ds, [0.8, 0.1, 0.1], generator=g
+            # )
+            self.train_ds, self.val_ds, self.test_ds = self.seen_ds.split_by_filename(
+                assign_fn=self.dataset_info.split_fn
+            )
 
     # def _collate_fn(self, batch: List[Tuple[torch.Tensor, int]]):
     #     xs, ys = zip(*batch)  # xs: tuple[(T_i, n_mfcc)], ys: tuple[int]
